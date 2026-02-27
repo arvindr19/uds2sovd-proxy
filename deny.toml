@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2025 The Contributors to Eclipse OpenSOVD (see CONTRIBUTORS)
+# SPDX-FileCopyrightText: 2026 The Contributors to Eclipse OpenSOVD (see CONTRIBUTORS)
 #
 # See the NOTICE file(s) distributed with this work for additional
 # information regarding copyright ownership.
@@ -9,11 +9,9 @@
 # https://www.apache.org/licenses/LICENSE-2.0
 
 [graph]
-targets = [
-  "aarch64-unknown-linux-gnu",
-  "aarch64-apple-darwin",
-  "x86_64-unknown-linux-gnu",
-]
+# TODO: add targets once the officially supported platforms are known.
+# Leaving targets empty means cargo-deny checks all platforms in the dependency
+# graph, which is the safest default.
 
 all-features = false
 no-default-features = false
@@ -34,9 +32,9 @@ ignore = []
 # List of explicitly allowed licenses
 # See https://spdx.org/licenses/ for list of possible licenses
 # [possible values: any SPDX 3.11 short identifier (+ optional exception)].
-allow = ["Apache-2.0", "BSD-3-Clause", "ISC", "MIT", "Unicode-3.0", "Zlib"]
+allow = ["Apache-2.0", "MIT"]
 
-confidence-threshold = 0.8
+confidence-threshold = 0.9
 exceptions = []
 
 [licenses.private]
@@ -47,7 +45,7 @@ registries = []
 # More documentation about the 'bans' section can be found here:
 # https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html
 [bans]
-multiple-versions = "allow"
+multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
 workspace-default-features = "allow"
@@ -63,11 +61,13 @@ skip-tree = []
 # More documentation about the 'sources' section can be found here:
 # https://embarkstudios.github.io/cargo-deny/checks/sources/cfg.html
 [sources]
-unknown-registry = "warn"
-unknown-git = "warn"
+unknown-registry = "deny"
+unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
+  # Internal dependency
   "https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git",
+  # TODO: Verify if below personal fork is necessary, it could break if the original repository is updated or fork no longer maintained
   "https://github.com/alexmohr/aide.git",
   "https://github.com/alexmohr/flatbuffers.git",
 ]

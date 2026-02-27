@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2025 The Contributors to Eclipse OpenSOVD (see CONTRIBUTORS)
+# SPDX-FileCopyrightText: 2026 The Contributors to Eclipse OpenSOVD (see CONTRIBUTORS)
 #
 # See the NOTICE file(s) distributed with this work for additional
 # information regarding copyright ownership.
@@ -20,55 +20,41 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_DENY_VERSION: 0.18.9
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
   build_and_test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: false
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.88.0
-          components: clippy, rustfmt
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: Install cargo-deny
-        run: cargo install --locked --version 0.18.9 cargo-deny
+        if: runner.os == 'Linux'
+        run: cargo install --locked --version ${{ env.CARGO_DENY_VERSION }} cargo-deny
       - name: Build
         run: cargo build --locked --verbose
       - name: Check licenses
+        if: runner.os == 'Linux'
         run: cargo deny check licenses
       - name: Check advisories
+        if: runner.os == 'Linux'
         run: cargo deny check advisories
       - name: Check allowed sources
+        if: runner.os == 'Linux'
         run: cargo deny check sources
       - name: Check banned practises
+        if: runner.os == 'Linux'
         run: cargo deny check bans
       - name: Run tests
-        run: cargo test --locked -- --show-output
-
-  build_windows:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: false
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.88.0
-          components: clippy, rustfmt
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --locked --verbose
-      - name: Test
         run: cargo test --locked -- --show-output

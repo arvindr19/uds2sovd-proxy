@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2025 The Contributors to Eclipse OpenSOVD (see CONTRIBUTORS)
+# SPDX-FileCopyrightText: 2026 The Contributors to Eclipse OpenSOVD (see CONTRIBUTORS)
 #
 # See the NOTICE file(s) distributed with this work for additional
 # information regarding copyright ownership.
@@ -15,15 +15,32 @@ edition = "2024"
 license = "Apache-2.0"
 homepage = "https://github.com/eclipse-opensovd/uds2sovd-proxy"
 
+[lints]
+workspace = true
+
+# Lints are aligned with shared-lints.toml from:
+# https://github.com/eclipse-opensovd/cicd-workflows/tree/main/shared-lints
 [workspace.lints.clippy]
 # enable pedantic
 pedantic = { level = "warn", priority = -1 }
 ## exclude some too pedantic lints for now
 similar_names = "allow"
 
-# additional lints
-clone_on_ref_ptr = "warn"
+## lints related to runtime panic behavior
+# enforce only checked access to slices to avoid runtime panics
 indexing_slicing = "deny"
+# disallow any unwraps in the production code
+# (unwrap in test code is explicitly allowed)
 unwrap_used = "deny"
+# enforce that arithmetic operations that can produce side effects always use
+# either checked or explicit versions of the operations. eg. `.checked_add(...)`
+# or `.saturating_sub(...)` to avoid unexpected runtime behavior or panics.
 arithmetic_side_effects = "deny"
+
+## lints related to readability of code
+# enforce that references are cloned via eg. `Arc::clone` instead of `.clone()`
+# making it explicit that a reference is cloned here and not the underlying data.
+clone_on_ref_ptr = "warn"
+# enforce that the type suffix of a literal is always appended directly
+# eg. 12u8 instead of 12_u8
 separated_literal_suffix = "deny"

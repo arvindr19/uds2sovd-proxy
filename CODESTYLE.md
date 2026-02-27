@@ -33,6 +33,7 @@ This repository follows most of the defaults in rustfmt, with some opinionated u
 
 As we do not want to require nightly rust for the entire repository, these settings are not yet included in `rustfmt.toml` (but will be once stabilized).
 Instead, run this command to apply the correct formatting:
+
 ```sh
 cargo +nightly fmt -- --check --config error_on_unformatted=true,error_on_line_overflow=true,format_strings=true,group_imports=StdExternalCrate,imports_granularity=Crate
 ```
@@ -52,7 +53,9 @@ Example for VS Code:
 ```
 
 ## Imports
+
 As noted in the formatting section, imports must be grouped and separated with a new line as follows:
+
   1. Standard library
   2. External crates
   3. Internal modules
@@ -71,7 +74,7 @@ Additionally the import granularity is set to `crate` to group all imports from 
 ## Licensing & Dependencies
 
 - Only allow SPDX-approved licenses:
-  `Apache-2.0`, `BSD-3-Clause`, `ISC`, `MIT`, `Unicode-3.0`, `Zlib`
+  `Apache-2.0`, `MIT`
 - Use `cargo-deny` to enforce dependency and license policies.
 
 ## Documentation

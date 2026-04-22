@@ -1,0 +1,27 @@
+[server]
+doip_port = 13_400
+bind_address = "0.0.0.0"
+max_connections = 10
+source_address = 3_712
+
+
+[sovd]
+gateway_url = "http://localhost:20002"
+client_id = "uds2sovd_proxy"
+client_secret = "test_secret"
+timeout_ms = 5_000
+mock_gateway = true
+include_schema = false
+api_version = "v15"
+
+
+[ecu]
+default_name = "AUTO_DETECT"
+logical_address = 1
+eid = [ 0, 1, 2, 3, 4, 5 ]
+gid = [ 0, 1, 2, 3, 4, 5 ]
+
+
+[logging]
+level = "debug"
+format = "pretty"

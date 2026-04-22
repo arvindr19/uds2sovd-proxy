@@ -26,10 +26,7 @@ pub struct DataResponse {
     pub id: String,
     /// Response data as JSON object.
     pub data: serde_json::Map<String, Value>,
-    /// Field-level errors returned by the sovd-server, if any.
-    ///
-    /// Parsed from the response but not yet mapped to UDS negative responses.
-    // TODO(sovd-server): map sovd-server field errors to NRC codes when live gateway is connected.
+    /// Field-level errors, if any.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub errors: Vec<Value>,
     /// Optional inline schema

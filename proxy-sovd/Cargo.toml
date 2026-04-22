@@ -19,6 +19,7 @@ license.workspace = true
 
 [dependencies]
 proxy-core = { workspace = true }
+async-trait = { workspace = true }
 cda-interfaces = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 serde = { workspace = true }

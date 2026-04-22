@@ -16,6 +16,7 @@ use proxy_core::{
     error::{Result, SovdError},
 };
 use serde_json::{Map, Value};
+use tracing::{debug, info, trace};
 
 use crate::{client::SovdClient, schema::DataResponse};
 
@@ -43,26 +44,18 @@ const MIN_WDBI_REQUEST_HEADER_LENGTH: usize = 3;
 /// - TODO(sovd): Forward parsed request data to the SOVD gateway for
 ///   write requests that need request-parameter context.
 pub struct SovdMapper {
-    /// ECU component name used in SOVD REST paths.
-    ecu_name: String,
-    /// When `true`, bypass HTTP and generate synthetic responses.
-    mock_gateway: bool,
-    /// Base URL of the SOVD gateway
-    gateway_url: String,
-    /// SOVD API version path segment
-    api_version: String,
+    /// Proxy configuration (ECU, SOVD endpoint, mock settings).
+    config: Config,
     /// HTTP client for the SOVD gateway.
     sovd_client: SovdClient,
 }
 
 impl SovdMapper {
+    /// Create a new mapper with the given configuration and SOVD client.
     #[must_use]
-    pub fn new(config: &Config, sovd_client: SovdClient) -> Self {
+    pub fn new(config: Config, sovd_client: SovdClient) -> Self {
         Self {
-            ecu_name: config.ecu.default_name.clone(),
-            mock_gateway: config.sovd.mock_gateway,
-            gateway_url: config.sovd.gateway_url.to_string(),
-            api_version: config.sovd.api_version.clone(),
+            config,
             sovd_client,
         }
     }
@@ -73,47 +66,44 @@ impl SovdMapper {
         &self,
         did: u16,
         uds_request: &[u8],
-        resolver: &ServiceResolver,
+        ecu_manager: Option<&ServiceResolver>,
         service_name: &str,
         parsed_data: Option<Map<String, Value>>,
     ) -> Result<Vec<u8>> {
-        tracing::debug!(
+        debug!(
             "[RDBI] DID 0x{:04X} service='{}' request={:02X?}",
-            did,
-            service_name,
-            uds_request
+            did, service_name, uds_request
         );
         if let Some(ref parsed) = parsed_data {
-            tracing::trace!(
+            trace!(
                 "[RDBI] Parsed request: {}",
                 serde_json::to_string_pretty(parsed).unwrap_or_default()
             );
         }
 
         let sovd_endpoint = service_name.to_lowercase();
+        let component = &self.config.ecu.default_name;
 
-        let sovd_response = if self.mock_gateway {
-            self.mock_read_response(did, service_name, &sovd_endpoint, resolver)
+        let sovd_response = if self.config.sovd.mock_gateway {
+            self.mock_read_response(did, service_name, &sovd_endpoint, ecu_manager)
                 .await?
         } else {
-            // TODO(sovd-server): read path - not exercised while mock_gateway = true.
             let resp = self
                 .sovd_client
-                .read_data(&self.ecu_name, &sovd_endpoint)
+                .read_data(component, &sovd_endpoint)
                 .await?;
-            tracing::debug!(
+            debug!(
                 "[RDBI] SOVD response for '{}': {:?}",
-                sovd_endpoint,
-                resp.data
+                sovd_endpoint, resp.data
             );
             resp
         };
 
         let uds_response = self
-            .sovd_json_to_uds(did, &sovd_response, resolver, service_name)
+            .sovd_json_to_uds(did, &sovd_response, ecu_manager, service_name)
             .await?;
 
-        tracing::info!(
+        info!(
             "[RDBI] DID 0x{:04X} '{}' -> {} bytes: {:02X?}",
             did,
             service_name,
@@ -138,13 +128,16 @@ impl SovdMapper {
 
         let sovd_endpoint = service_name.to_lowercase();
 
-        tracing::debug!(
+        let sovd_write_data = parsed_data;
+        debug!(
             "[WDBI] SOVD JSON data: {}",
-            serde_json::to_string_pretty(&parsed_data).unwrap_or_default()
+            serde_json::to_string_pretty(&sovd_write_data).unwrap_or_default()
         );
 
+        let component = &self.config.ecu.default_name;
+
         self.sovd_client
-            .write_data(&self.ecu_name, &sovd_endpoint, parsed_data)
+            .write_data(component, &sovd_endpoint, sovd_write_data)
             .await?;
 
         let uds_response = vec![
@@ -153,7 +146,7 @@ impl SovdMapper {
             (did & 0xFF) as u8,
         ];
 
-        tracing::info!(
+        info!(
             "[WDBI] DID 0x{:04X} '{}' -> {} bytes",
             did,
             service_name,
@@ -162,40 +155,49 @@ impl SovdMapper {
         Ok(uds_response)
     }
 
-    /// Bypass the live SOVD gateway and return a synthetic [`DataResponse`].
-    ///
-    /// Builds the response JSON entirely from MDD POS-RESPONSE metadata so
-    /// the full UDS translation pipeline can be exercised without a running
-    /// SOVD server.  Logs the URL that would have been called so the mock
-    /// path is easy to spot in traces.
-    ///
-    /// # Errors
-    /// Returns an error if no POS-RESPONSE metadata is available for the
-    /// requested service.
     async fn mock_read_response(
         &self,
         did: u16,
         service_name: &str,
         sovd_endpoint: &str,
-        resolver: &ServiceResolver,
+        ecu_manager: Option<&ServiceResolver>,
     ) -> Result<DataResponse> {
         let would_be_url = format!(
             "{}/vehicle/{}/components/{}/data/{}",
-            self.gateway_url, self.api_version, self.ecu_name, sovd_endpoint
+            self.config.sovd.gateway_url,
+            self.config.sovd.api_version,
+            self.config.ecu.default_name,
+            sovd_endpoint
         );
-        tracing::info!(
+        info!(
             "[SOVD MOCK] GET {} (intercepted —> generating synthetic response)",
             would_be_url
         );
 
-        let meta = resolver
-            .get_response_metadata(service_name, did)
-            .await
-            .map_err(|e| {
-                SovdError::SchemaMismatch(format!(
-                    "Failed to load POS-RESPONSE metadata for '{service_name}': {e}"
-                ))
-            })?;
+        let mgr = ecu_manager.ok_or_else(|| {
+            SovdError::SchemaMismatch(
+                "ECU manager required for mock response generation".to_string(),
+            )
+        })?;
+
+        let meta = match mgr.get_enriched_response_metadata(service_name, did).await {
+            Ok(m) => m,
+            Err(e) => {
+                debug!(
+                    "[SOVD MOCK] Enriched metadata unavailable for '{}': {}. Falling back to \
+                     basic POS-RESPONSE metadata",
+                    service_name, e
+                );
+                mgr.get_response_parameter_metadata(service_name)
+                    .await
+                    .map_err(|inner| {
+                        SovdError::SchemaMismatch(format!(
+                            "Failed to load POS-RESPONSE metadata for '{service_name}': {e} \
+                             (fallback: {inner})"
+                        ))
+                    })?
+            }
+        };
 
         if meta.is_empty() {
             return Err(SovdError::SchemaMismatch(format!(
@@ -208,7 +210,7 @@ impl SovdMapper {
             .sovd_client
             .generate_mock_response_data(sovd_endpoint, &meta, did);
 
-        tracing::debug!(
+        debug!(
             "[SOVD MOCK] Generated response SOVD JSON data:\n{}",
             serde_json::to_string_pretty(&data).unwrap_or_default()
         );
@@ -216,22 +218,18 @@ impl SovdMapper {
         Ok(DataResponse::new(sovd_endpoint.to_string(), data))
     }
 
-    /// Convert a SOVD JSON response into raw UDS response bytes.
-    ///
-    /// Delegates encoding to [`ResponseEncoder`], which uses MDD POS-RESPONSE
-    /// parameter metadata to place each field at its correct byte offset.
-    ///
-    /// # Errors
-    /// Returns an error if the MDD encoder cannot produce a valid response
-    /// for the given service name.
     async fn sovd_json_to_uds(
         &self,
         did: u16,
         sovd_response: &DataResponse,
-        resolver: &ServiceResolver,
+        ecu_manager: Option<&ServiceResolver>,
         service_name: &str,
     ) -> Result<Vec<u8>> {
         use cda_interfaces::HashMap as CdaHashMap;
+
+        let mgr = ecu_manager.ok_or_else(|| {
+            SovdError::SchemaMismatch("ECU manager required for MDD encoding".to_string())
+        })?;
 
         let mut response_data: CdaHashMap<String, Value> = CdaHashMap::default();
 
@@ -239,7 +237,7 @@ impl SovdMapper {
             response_data.insert(k.clone(), v.clone());
         }
 
-        let uds_bytes = resolver
+        let uds_bytes = mgr
             .build_response(
                 service_name,
                 service_ids::READ_DATA_BY_IDENTIFIER,
@@ -253,10 +251,9 @@ impl SovdMapper {
                 ))
             })?;
 
-        tracing::debug!(
+        debug!(
             "[MDD] SOVD JSON -> UDS for '{}': {:02X?}",
-            service_name,
-            uds_bytes
+            service_name, uds_bytes
         );
 
         Ok(uds_bytes)
@@ -271,7 +268,7 @@ mod tests {
         let config = Config::default();
         let sovd_client =
             SovdClient::new(config.sovd.clone()).expect("failed to create SOVD client");
-        SovdMapper::new(&config, sovd_client)
+        SovdMapper::new(config, sovd_client)
     }
 
     #[test]
@@ -283,6 +280,6 @@ mod tests {
     #[test]
     fn test_mapper_creation() {
         let mapper = create_test_mapper();
-        assert!(!mapper.ecu_name.is_empty());
+        assert!(!mapper.config.sovd.gateway_url.is_empty());
     }
 }

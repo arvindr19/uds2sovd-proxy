@@ -19,6 +19,7 @@ resolver = "3"
 members = [
   "proxy-core",
   "proxy-sovd",
+  "proxy-doip",
 ]
 
 [workspace.dependencies]

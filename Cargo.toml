@@ -16,7 +16,10 @@ homepage = "https://github.com/eclipse-opensovd/uds2sovd-proxy"
 
 [workspace]
 resolver = "3"
-members = ["proxy-core"]
+members = [
+  "proxy-core",
+  "proxy-sovd",
+]
 
 [workspace.dependencies]
 proxy-core = { path = "proxy-core" }

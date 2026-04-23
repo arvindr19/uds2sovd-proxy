@@ -34,25 +34,42 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Format and Clippy - Nightly toolchain pinned
-        uses: eclipse-opensovd/cicd-workflows/rust-lint-and-format-action@41c531349e9d7e7852455c35682cd200519fb81b
         with:
-          toolchain: nightly-2025-07-14
+          submodules: false
+      - name: Format and Clippy - Stable toolchain
+        uses: eclipse-opensovd/cicd-workflows/rust-lint-and-format-action@b90aee53ba1739e08f7991d24241b23903a8c11a
+        with:
+          toolchain: 1.88.0
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fail-on-format-error: "true"
           fail-on-clippy-error: "true"
           clippy-deny-warnings: "true"
+          clippy-features: "all-features"
+          rustfmt-enable-reviewdog: "false"
+          error-on-unformatted: "false"
+      - name: Format and Clippy - Nightly toolchain pinned
+        uses: eclipse-opensovd/cicd-workflows/rust-lint-and-format-action@b90aee53ba1739e08f7991d24241b23903a8c11a
+        with:
+          toolchain: nightly-2025-07-14
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fail-on-format-error: "false"
+          fail-on-clippy-error: "false"
+          clippy-deny-warnings: "false"
+          clippy-features: "all-features"
+          error-on-unformatted: "false"
           reporter: ${{ env.IS_FORK == 'true' && 'github-pr-annotations' || 'github-pr-review' }}
       - name: Format and Clippy - Nightly toolchain latest
         id: nightly-clippy
         continue-on-error: true
-        uses: eclipse-opensovd/cicd-workflows/rust-lint-and-format-action@41c531349e9d7e7852455c35682cd200519fb81b
+        uses: eclipse-opensovd/cicd-workflows/rust-lint-and-format-action@b90aee53ba1739e08f7991d24241b23903a8c11a
         with:
           toolchain: nightly
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fail-on-format-error: "false"
           fail-on-clippy-error: "false"
           clippy-deny-warnings: "false"
+          clippy-features: "all-features"
+          error-on-unformatted: "false"
           # For nightly, we post to the whole PR (not just the diff) so all findings
           # are visible, helping developers proactively detect upcoming nightly breakage.
           reporter: ${{ env.IS_FORK == 'true' && 'github-annotations' || 'github-pr-check' }}

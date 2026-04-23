@@ -475,36 +475,6 @@ impl ServiceResolver {
         Some((response, effective_service))
     }
 
-    /// `TODO:` to be removed, used in examples and debugging until the SOVD server returns
-    /// fully decoded responses.
-    /// Parse UDS response bytes using the MDD POS-RESPONSE structure.
-    ///
-    /// Delegates to CDA's `convert_from_uds` for decoding. Used by example
-    /// clients for response inspection and debugging.
-    ///
-    /// # Errors
-    /// Returns an error if the response cannot be parsed.
-    pub async fn parse_response(
-        &self,
-        service_name: &str,
-        request_sid: u8,
-        uds_response: &[u8],
-    ) -> Result<serde_json::Map<String, serde_json::Value>, DiagServiceError> {
-        let diag_comm = self.make_diag_comm(service_name, request_sid);
-        let payload = make_service_payload(uds_response);
-        let manager = self.manager.read().await;
-        let response = manager.convert_from_uds(&diag_comm, &payload, true).await?;
-        let json_response = response.into_json()?;
-
-        match json_response.data {
-            serde_json::Value::Object(map) => Ok(map),
-            serde_json::Value::Null => Ok(serde_json::Map::new()),
-            other => Err(DiagServiceError::InvalidRequest(format!(
-                "Expected JSON object in response, got: {other:?}"
-            ))),
-        }
-    }
-
     /// Parse UDS request bytes using the MDD request structure.
     ///
     /// # Errors

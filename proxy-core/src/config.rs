@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::error::{ProxyError, Result};
 
@@ -24,7 +24,7 @@ fn default_true() -> bool {
 }
 
 /// Top-level proxy configuration loaded from a TOML file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// `DoIP` server settings (port, bind address, source address).
     pub server: ServerConfig,
@@ -37,7 +37,7 @@ pub struct Config {
 }
 
 /// TODO: `DoIP` server configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
     /// TCP port for the `DoIP` server (default: 13400).
     pub doip_port: u16,
@@ -50,7 +50,7 @@ pub struct ServerConfig {
 }
 
 /// SOVD gateway connection configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SovdConfig {
     /// Base URL of the SOVD gateway (e.g. `http://localhost:20002`).
     pub gateway_url: String,
@@ -71,7 +71,7 @@ pub struct SovdConfig {
 }
 
 /// ECU identity and addressing configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct EcuConfig {
     /// Default ECU name used for SOVD component path.
     pub default_name: String,
@@ -84,7 +84,7 @@ pub struct EcuConfig {
 }
 
 /// Logging output configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct LoggingConfig {
     /// Log level filter (e.g. `info`, `debug`, `trace`).
     pub level: String,

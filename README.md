@@ -57,7 +57,7 @@ cargo build --release
 
 ### running
 
-Ensure that the config (`config.toml`) fits your setup:
+Ensure that the config (`examples/config.toml`) fits your setup:
 
 - `doip_port` is set to the desired DoIP server port (default: `13400`)
 - `gateway_url` points to the SOVD gateway (CDA or mock)
@@ -77,7 +77,7 @@ cargo run --release -- --mdd-file FLXC1000.mdd
 
 ### running with SOVD Server
 
-To use the proxy with a real SOVD Server instance, set `mock_gateway = false` in `config.toml` and point `gateway_url` to the SOVD Server endpoint.
+To use the proxy with a real SOVD Server instance, set `mock_gateway = false` in `examples/config.toml` and point `gateway_url` to the SOVD Server endpoint.
 
 ## architecture
 
@@ -104,7 +104,7 @@ DoIP Client
 
 ## configuration
 
-Edit `config.toml`:
+Edit `examples/config.toml`:
 
 - `doip_port = 13_400`: DoIP server port
 - `mock_gateway = true`: Use built-in mock responses

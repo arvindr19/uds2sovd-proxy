@@ -1,0 +1,336 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: 2026 The Contributors to Eclipse OpenSOVD (see CONTRIBUTORS)
+ *
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Apache License Version 2.0 which is available at
+ * https://www.apache.org/licenses/LICENSE-2.0
+ */
+
+//! UDS response building and validation.
+//!
+//! Implements [`ServiceResolver::build_response`] which encodes SOVD JSON
+//! data into UDS response bytes using MDD parameter metadata.
+
+use cda_interfaces::{
+    DiagServiceError, EcuManager as EcuManagerTrait, HashMap, UDS_ID_RESPONSE_BITMASK,
+    diagservices::DiagServiceResponse,
+};
+
+use super::{
+    ServiceResolver, UDS_POSITIVE_RESPONSE_MIN_SIZE,
+    uds_helpers::{
+        encode_unsigned_be, encode_value_at, find_mux_case_prefix, make_service_payload,
+        value_to_bytes,
+    },
+};
+
+impl ServiceResolver {
+    /// Build UDS response bytes from SOVD JSON data using MDD response metadata.
+    ///
+    /// Queries the POS-RESPONSE parameter layout from the MDD to determine exact
+    /// byte positions and sizes for each parameter.  Each parameter is encoded
+    /// at its MDD-defined position:
+    ///
+    /// - **CODED-CONST**: fixed value written directly (e.g. response SID).
+    /// - **`MatchingRequestParam`**: DID bytes from the original request.
+    /// - **VALUE**: SOVD data value encoded with the correct byte width;
+    ///   defaults to 0 when the key is not present in the SOVD response.
+    ///
+    /// Falls back to naive encoding if response metadata is unavailable.
+    ///
+    /// # Errors
+    /// Returns an error if the response cannot be encoded.
+    ///
+    /// # TODO:
+    /// Once the SOVD server returns properly structured responses, the naive
+    /// encoding fallback and the MDD-based `encode_response_from_metadata`
+    /// path can be removed — the proxy will forward pre-encoded UDS bytes.
+    pub async fn build_response(
+        &self,
+        service_name: &str,
+        sid: u8,
+        did: u16,
+        response_data: HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<u8>, DiagServiceError> {
+        tracing::debug!(
+            "[MDD] Building UDS response for '{}' SID 0x{:02X} DID 0x{:04X}",
+            service_name,
+            sid,
+            did,
+        );
+
+        let (response, effective_service) = if let Some((r, svc)) = self
+            .encode_response_from_metadata(service_name, sid, did, &response_data)
+            .await
+        {
+            (r, svc)
+        } else {
+            // Fallback: naive encoding — used when no response metadata is available.
+            tracing::debug!(
+                "[MDD] No response metadata for '{}', using naive encoding",
+                service_name
+            );
+            let response_sid = sid.wrapping_add(UDS_ID_RESPONSE_BITMASK);
+            #[allow(clippy::cast_possible_truncation)]
+            let mut response = vec![response_sid, (did >> 8) as u8, (did & 0xFF) as u8];
+
+            let entries: Vec<_> = response_data
+                .iter()
+                .filter(|(k, _)| !k.eq_ignore_ascii_case("sid"))
+                .collect();
+
+            for (key, value) in entries {
+                match value {
+                    serde_json::Value::String(s) => {
+                        response.extend_from_slice(s.as_bytes());
+                    }
+                    serde_json::Value::Number(n) => {
+                        if let Some(num) = n.as_u64() {
+                            response.extend(encode_unsigned_be(num));
+                        } else if let Some(num) = n.as_i64() {
+                            let unsigned = num.cast_unsigned();
+                            #[allow(clippy::cast_possible_truncation)]
+                            if u8::try_from(unsigned).is_ok() {
+                                response.push(unsigned as u8);
+                            } else {
+                                response.push((unsigned >> 8) as u8);
+                                response.push((unsigned & 0xFF) as u8);
+                            }
+                        }
+                    }
+                    serde_json::Value::Array(arr) => {
+                        for item in arr {
+                            #[allow(clippy::cast_possible_truncation)]
+                            if let Some(byte) = item.as_u64() {
+                                response.push(byte as u8);
+                            }
+                        }
+                    }
+                    serde_json::Value::Bool(b) => {
+                        response.push(u8::from(*b));
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "[MDD] Skipping unsupported value type for '{}': {:?}",
+                            key,
+                            value
+                        );
+                    }
+                }
+            }
+
+            tracing::debug!("[MDD] Built UDS response (naive): {:02X?}", response);
+            (response, service_name.to_string())
+        };
+
+        // Debug-only round-trip validation: parse the built bytes back through
+        // the CDA to confirm the MDD layout produces a decodable
+        // response.  Uses the effective service name (which may be an enriched
+        // MUX sibling) so the CDA parses against the same structure we
+        // encoded with.
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            self.validate_response(&effective_service, sid, &response)
+                .await;
+        }
+
+        Ok(response)
+    }
+
+    /// Round-trip validate UDS response bytes by parsing them back through
+    /// the CDA.
+    ///
+    /// Called only when `tracing::Level::DEBUG` is enabled — failures are logged
+    /// as warnings but never block the response (non-blocking).
+    async fn validate_response(&self, service_name: &str, request_sid: u8, uds_response: &[u8]) {
+        let diag_comm = self.make_diag_comm(service_name, request_sid);
+        let payload = make_service_payload(uds_response);
+        let manager = self.manager.read().await;
+        match manager.convert_from_uds(&diag_comm, &payload, true).await {
+            Ok(parsed) => match parsed.into_json() {
+                Ok(json) => tracing::trace!(
+                    "[MDD] Round-trip validation OK for '{}': {:?}",
+                    service_name,
+                    json.data
+                ),
+                Err(e) => tracing::warn!(
+                    "[MDD] Round-trip validation: JSON decode failed for '{}': {}",
+                    service_name,
+                    e
+                ),
+            },
+            Err(e) => tracing::warn!(
+                "[MDD] Round-trip validation: parse failed for '{}': {}",
+                service_name,
+                e
+            ),
+        }
+    }
+
+    /// Encode a UDS response using POS-RESPONSE parameter metadata from the MDD.
+    ///
+    /// For each parameter in the MDD response structure:
+    /// - CODED-CONST (e.g. response SID at byte 0): writes the const value.
+    /// - `MatchingRequestParam` (e.g. DID at bytes 1-2): writes the DID.
+    /// - VALUE: uses the SOVD response data keyed by the MDD parameter name;
+    ///   falls back to `0` when the key is absent.
+    ///
+    /// Returns `None` when no response metadata is available for the service.
+    /// On success returns the encoded bytes and the effective service name
+    /// (which may differ from `service_name` when enriched MUX sibling metadata
+    /// is used).
+    async fn encode_response_from_metadata(
+        &self,
+        service_name: &str,
+        _sid: u8,
+        did: u16,
+        response_data: &HashMap<String, serde_json::Value>,
+    ) -> Option<(Vec<u8>, String)> {
+        let (meta, effective_service) = self
+            .get_enriched_response_metadata_with_source(service_name, did)
+            .await
+            .ok()?;
+        if meta.is_empty() {
+            return None;
+        }
+
+        // Find the MUX case matching this DID (if any) using floor-based matching.
+        let mux_case_prefix = find_mux_case_prefix(&meta, did);
+
+        // Derive the matching marker name for total_size computation.
+        let mux_marker_name: Option<String> = mux_case_prefix
+            .as_deref()
+            .map(|pfx| format!("__mux_case__/{}", pfx.trim_end_matches('/')));
+
+        // Filter: keep top-level params (no '/') + matching MUX case VALUE params
+        // + the matching case marker (for total_size).
+        let active_params: Vec<_> = meta
+            .iter()
+            .filter(|p| {
+                if !p.name.contains('/') {
+                    true
+                } else if let Some(prefix) = &mux_case_prefix {
+                    p.name.starts_with(prefix.as_str())
+                        || mux_marker_name.as_deref() == Some(&p.name)
+                } else {
+                    !p.name.starts_with("__mux_case__/")
+                }
+            })
+            .collect();
+
+        // Resolve effective size for each active param. For VALUE params with
+        // `byte_size: None` (variable-length DOPs like EndOfPdu), the size is
+        // inferred from the actual response data.
+        let effective_sizes: Vec<usize> = active_params
+            .iter()
+            .map(|p| {
+                if let Some(s) = p.byte_size {
+                    return s as usize;
+                }
+                // Variable-size VALUE param — infer size from the data.
+                if !matches!(
+                    &p.param_type,
+                    cda_interfaces::ParameterTypeMetadata::Value { .. }
+                ) {
+                    return 0;
+                }
+                let short_name = p.name.rsplit('/').next().unwrap_or(&p.name);
+                let value = response_data
+                    .get(&p.name)
+                    .or_else(|| response_data.get(short_name))
+                    .or_else(|| response_data.get(&p.name.to_ascii_lowercase()))
+                    .or_else(|| response_data.get(&short_name.to_ascii_lowercase()))
+                    .or_else(|| response_data.get("data"));
+                value_to_bytes(value).len()
+            })
+            .collect();
+
+        // Determine total response size from filtered params.
+        let total_size = active_params
+            .iter()
+            .zip(effective_sizes.iter())
+            .map(|(p, &sz)| (p.byte_position as usize).saturating_add(sz))
+            .max()
+            .unwrap_or(UDS_POSITIVE_RESPONSE_MIN_SIZE);
+
+        let mut response = vec![0u8; total_size];
+
+        for (param, &eff_size) in active_params.iter().zip(effective_sizes.iter()) {
+            // Skip MUX case markers — they're only used for total_size computation.
+            if param.name.starts_with("__mux_case__/") {
+                continue;
+            }
+            let pos = param.byte_position as usize;
+
+            if eff_size == 0 || pos.saturating_add(eff_size) > response.len() {
+                continue;
+            }
+
+            match &param.param_type {
+                cda_interfaces::ParameterTypeMetadata::CodedConst { coded_value } => {
+                    // The SID byte is stored as a decimal string (e.g. "98" for 0x62).
+                    if let Ok(val) = coded_value.parse::<u64>() {
+                        let bytes = encode_unsigned_be(val);
+                        let copy_len = bytes.len().min(eff_size);
+                        // Right-align in the field (big-endian convention).
+                        let offset = eff_size.saturating_sub(copy_len);
+                        let dst_start = pos.saturating_add(offset);
+                        let dst_end = dst_start.saturating_add(copy_len);
+                        let src_start = bytes.len().saturating_sub(copy_len);
+                        if let (Some(dst), Some(src)) =
+                            (response.get_mut(dst_start..dst_end), bytes.get(src_start..))
+                        {
+                            dst.copy_from_slice(src);
+                        }
+                    }
+                }
+                cda_interfaces::ParameterTypeMetadata::MatchingRequestParam { .. } => {
+                    // DID bytes from the original request, big-endian.
+                    let did_bytes = [(did >> 8) as u8, (did & 0xFF) as u8];
+                    let copy_len = did_bytes.len().min(eff_size);
+                    if let (Some(dst), Some(src)) = (
+                        response.get_mut(pos..pos.saturating_add(copy_len)),
+                        did_bytes.get(..copy_len),
+                    ) {
+                        dst.copy_from_slice(src);
+                    }
+                }
+                cda_interfaces::ParameterTypeMetadata::Value { .. } => {
+                    // For MUX case params, try the short name (after '/') as well.
+                    let short_name = param.name.rsplit('/').next().unwrap_or(&param.name);
+                    let value = response_data
+                        .get(&param.name)
+                        .or_else(|| response_data.get(short_name))
+                        .or_else(|| response_data.get(&param.name.to_ascii_lowercase()))
+                        .or_else(|| response_data.get(&short_name.to_ascii_lowercase()))
+                        .or_else(|| response_data.get("data"));
+
+                    if param.byte_size.is_some() {
+                        encode_value_at(&mut response, pos, eff_size, value);
+                    } else {
+                        // Variable-size param: write the raw byte representation.
+                        let bytes = value_to_bytes(value);
+                        let copy_len = bytes.len().min(eff_size);
+                        if let (Some(dst), Some(src)) = (
+                            response.get_mut(pos..pos.saturating_add(copy_len)),
+                            bytes.get(..copy_len),
+                        ) {
+                            dst.copy_from_slice(src);
+                        }
+                    }
+                }
+                cda_interfaces::ParameterTypeMetadata::PhysConst { .. } => {}
+            }
+        }
+
+        tracing::debug!(
+            "[MDD] Built UDS response via metadata for '{}'): {:02X?}",
+            service_name,
+            response
+        );
+        Some((response, effective_service))
+    }
+}

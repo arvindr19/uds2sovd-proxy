@@ -1,0 +1,155 @@
+' SPDX-License-Identifier: Apache-2.0
+' SPDX-FileCopyrightText: 2026 The Contributors to Eclipse OpenSOVD (see CONTRIBUTORS)
+'
+' See the NOTICE file(s) distributed with this work for additional
+' information regarding copyright ownership.
+'
+' This program and the accompanying materials are made available under the
+' terms of the Apache License Version 2.0 which is available at
+' https://www.apache.org/licenses/LICENSE-2.0
+
+@startuml service_resolver_class
+!pragma layout smetana
+
+title Service Resolver – Class Diagram\n<size:11><color:gray>proxy-core::service_resolver — MDD-driven UDS encoding / decoding</color></size>
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+skinparam noteFontSize 11
+skinparam classFontSize 12
+
+' ─────────────────────────────────────────────────────────────────
+' proxy-core::service_resolver
+' One struct (ServiceResolver) whose impl blocks are split across
+' four source files for readability.  uds_helpers is a separate
+' module of free (non-method) functions.
+' ─────────────────────────────────────────────────────────────────
+package "proxy-core::service_resolver" {
+
+    class ServiceResolver {
+        - manager : Arc<RwLock<CdaEcuManager>>
+        - ecu_name : String
+        == mod.rs — construction & UDS helpers ==
+        + {static} new(ecu_name, db, logical, tester) : Result<Self>
+        + ecu_name() : &str
+        + {static} is_negative_response(uds) : bool
+        + {static} get_nrc(uds) : Option<u8>
+        == resolve.rs — DID → service name ==
+        + <<async>> resolve_read_service(did, uds) : Option<(String, Map)>
+        + <<async>> resolve_write_service(did, uds) : Option<(String, Map)>
+        + <<async>> parse_request(name, uds) : Result<Map>
+        == response.rs — encode UDS response ==
+        + <<async>> build_response(name, sid, did, data) : Result<Vec<u8>>
+        == metadata.rs — MDD parameter queries ==
+        + <<async>> get_service_parameter_metadata(name) : Result<Vec<Param>>
+        + <<async>> get_response_parameter_metadata(name) : Result<Vec<RespParam>>
+        + <<async>> get_enriched_response_metadata(name, did) : Result<Vec<RespParam>>
+        + <<async>> lookup_service_names_by_sid(sid) : Result<Vec<String>>
+        + <<async>> get_mux_cases_for_service(name) : Result<Vec<MuxCase>>
+    }
+
+    note right of ServiceResolver
+
+        <b>Service resolution algorithm (resolve.rs):</b>
+        1. lookup_diagcomms_by_request_prefix([SID,DID_HI,DID_LO])
+        2. Single match  →  service name found (fast path)
+        3. Multiple candidates  →  inspect request parameter metadata:
+           • CodedConst   — exact DID value match
+           • PhysConst    — coded_value or create_uds_payload probe
+           • Value        — coded_default or CompuScale range match
+        4. No match  →  log error, return None (no fallback)
+
+        <b>Response encoding (response.rs):</b>
+        Walk MDD POS-RESPONSE parameters:
+        • CODED-CONST        → fixed byte (e.g. response SID 0x62)
+        • MatchingRequestParam → echo DID bytes from request
+        • VALUE              → SOVD JSON value at MDD-defined offset
+        Opaque STRUCTURE types trigger MUX sibling lookup.
+    end note
+
+    class uds_helpers <<module: free functions>> {
+        ' ── pub re-exports (used by proxy-sovd) ──
+        + parse_mux_coded_value(coded) : Option<u64>
+        + find_mux_case_prefix(meta, did) : Option<String>
+        + has_mux_case_for_did_exact(meta, did) : bool
+        == internal helpers ==
+        ~ extract_did_from_uds(data) : Option<u16>
+        ~ diag_comm_type(sid) : DiagCommType
+        ~ make_service_payload(data) : ServicePayload
+        ~ encode_unsigned_be(num) : Vec<u8>
+        ~ parse_u64_literal(value) : Option<u64>
+        ~ find_did_param(meta, sid) : Option<Param>
+        ~ did_matches_compu_scales(scales, did) : bool
+        ~ encode_value_at(buf, pos, size, value) : ()
+        ~ value_to_bytes(value) : Vec<u8>
+    }
+
+    note bottom of uds_helpers
+        Top 3 are pub re-exported from mod.rs
+        and used by proxy-sovd for MUX matching.
+    end note
+
+    ServiceResolver ..> uds_helpers : uses
+}
+
+' ─────────────────────────────────────────────────────────────────
+' CDA (external dependency — cda-core / cda-interfaces)
+' ─────────────────────────────────────────────────────────────────
+package "cda-core  <size:10>(external path dep)</size>" #LightGray {
+
+    interface EcuManagerTrait <<cda-interfaces>> {
+        ' — resolution —
+        + lookup_diagcomms_by_request_prefix(prefix)
+        + get_request_parameter_metadata(service)
+        ' — response building —
+        + get_response_parameter_metadata(service)
+        + get_components_data_info(service)
+        ' — encoding / decoding —
+        + create_uds_payload(service, params)
+        + convert_from_uds(service, bytes)
+        + convert_request_from_uds(service, bytes)
+        ' — variant selection —
+        + detect_variant()
+    }
+
+    class "CdaEcuManager\n<size:10><DefaultSecurityPluginData></size>" as CdaEcuManager {
+        ' Loads an MDD file (DiagnosticDatabase) and
+        ' implements EcuManagerTrait for UDS ↔ MDD ops.
+    }
+
+    CdaEcuManager ..|> EcuManagerTrait
+}
+
+' ─────────────────────────────────────────────────────────────────
+' proxy-core public API consumed by proxy-sovd / proxy-doip
+' ─────────────────────────────────────────────────────────────────
+package "proxy-core  <size:10>(public API)</size>" #LightYellow {
+
+    interface DiagHandler <<async_trait>> {
+        ' Implemented by SovdDiagHandler in proxy-sovd.
+        ' ServiceResolver is a field of SovdDiagHandler —
+        ' not a DiagHandler implementor itself.
+        + <<async>> handle_read_did(did, uds) : Result<Vec<u8>>
+        + <<async>> handle_write_did(did, uds) : Result<Vec<u8>>
+    }
+
+    class Config {
+        + server : ServerConfig
+        + sovd   : SovdConfig
+        + ecu    : EcuConfig
+        + logging : LoggingConfig
+        --
+        + {static} from_file(path) : Result<Self>
+    }
+}
+
+' ─────────────────────────────────────────────────────────────────
+' Relationships
+' ─────────────────────────────────────────────────────────────────
+ServiceResolver *--> CdaEcuManager : owns via Arc<RwLock>\n(shared with callers)
+
+note on link
+    Async RwLock allows concurrent
+    read access across Tokio tasks.
+end note
+
+@enduml

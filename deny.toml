@@ -25,7 +25,7 @@ feature-depth = 1
 # More documentation for the advisories section can be found here:
 # https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html
 [advisories]
-ignore = [ "RUSTSEC-2023-0071" ]
+ignore = ["RUSTSEC-2023-0071"]
 
 
 # This section is considered when running `cargo deny check licenses`
@@ -36,21 +36,21 @@ ignore = [ "RUSTSEC-2023-0071" ]
 # See https://spdx.org/licenses/ for list of possible licenses
 # [possible values: any SPDX 3.11 short identifier (+ optional exception)].
 allow = [
-"Apache-2.0",
-"MIT",
-"BSD-3-Clause",
-"Zlib",
-"ISC",
-"Unicode-3.0",
-"CDLA-Permissive-2.0"
+  "Apache-2.0",
+  "MIT",
+  "BSD-3-Clause",
+  "Zlib",
+  "ISC",
+  "Unicode-3.0",
+  "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
-exceptions = [ ]
+exceptions = []
 
 
 [licenses.private]
 ignore = true
-registries = [ ]
+registries = []
 
 
 # This section is considered when running `cargo deny check bans`.
@@ -62,12 +62,12 @@ wildcards = "allow"
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"
-allow = [ ]
-deny = [ ]
+allow = []
+deny = []
 
 # Certain crates/versions that will be skipped when doing duplicate detection.
-skip = [ ]
-skip-tree = [ ]
+skip = []
+skip-tree = []
 
 
 # This section is considered when running `cargo deny check sources`.
@@ -76,17 +76,17 @@ skip-tree = [ ]
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-registry = [ "https://github.com/rust-lang/crates.io-index" ]
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
-# Internal dependency
-"https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git",
-# TODO: Verify if below personal fork is necessary, it could break if the original repository is updated or fork no longer maintained
-"https://github.com/alexmohr/aide.git",
-"https://github.com/alexmohr/flatbuffers.git"
+  # Internal dependency
+  "https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git",
+  # TODO: Verify if below personal fork is necessary, it could break if the original repository is updated or fork no longer maintained
+  "https://github.com/alexmohr/aide.git",
+  "https://github.com/alexmohr/flatbuffers.git",
 ]
 
 
 [sources.allow-org]
-github = [ ]
-gitlab = [ ]
-bitbucket = [ ]
+github = []
+gitlab = []
+bitbucket = []

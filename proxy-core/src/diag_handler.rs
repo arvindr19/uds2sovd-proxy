@@ -16,7 +16,7 @@ use crate::error::Result;
 
 /// Trait for processing UDS diagnostic requests through a backend.
 #[async_trait]
-pub trait DiagHandler: Send + Sync {
+pub trait DiagHandler {
     /// Process a `ReadDataByIdentifier` (0x22) request.
     ///
     /// `did` is the extracted 16-bit Data Identifier.

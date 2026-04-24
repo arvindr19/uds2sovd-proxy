@@ -59,7 +59,6 @@ async fn main() -> Result<()> {
         Config::default()
     });
 
-    config.validate()?;
     init_logging(&config, args.log_level.as_deref());
 
     info!("Starting UDS2SOVD Proxy");

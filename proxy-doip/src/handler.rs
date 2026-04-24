@@ -121,7 +121,7 @@ pub struct ConnectionHandler {
     /// Shared proxy configuration.
     config: Arc<Config>,
     /// Backend handler for UDS request processing.
-    diag_handler: Arc<dyn DiagHandler>,
+    diag_handler: Arc<dyn DiagHandler + Send + Sync>,
     /// Active TCP stream for this connection.
     stream: TcpStream,
     /// Routing activation session state.
@@ -132,7 +132,7 @@ pub struct ConnectionHandler {
 
 impl ConnectionHandler {
     /// Create a new connection handler.
-    pub fn new(config: Arc<Config>, diag_handler: Arc<dyn DiagHandler>, stream: TcpStream) -> Self {
+    pub fn new(config: Arc<Config>, diag_handler: Arc<dyn DiagHandler + Send + Sync>, stream: TcpStream) -> Self {
         Self {
             config,
             diag_handler,

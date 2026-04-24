@@ -35,7 +35,7 @@ pub struct DoIpServer {
     /// Shared proxy configuration.
     config: Arc<Config>,
     /// Backend diagnostic handler injected at construction time.
-    diag_handler: Arc<dyn DiagHandler>,
+    diag_handler: Arc<dyn DiagHandler + Send + Sync>,
     /// Number of currently active TCP connections.
     active_connections: Arc<AtomicUsize>,
 }
@@ -45,7 +45,7 @@ impl DoIpServer {
     ///
     /// The handler is constructed and wired in `proxy-main`, keeping the
     /// `DoIP` layer decoupled from the concrete SOVD backend.
-    pub fn new(config: Arc<Config>, diag_handler: Arc<dyn DiagHandler>) -> Self {
+    pub fn new(config: Arc<Config>, diag_handler: Arc<dyn DiagHandler + Send + Sync>) -> Self {
         Self {
             config,
             diag_handler,

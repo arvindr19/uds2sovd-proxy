@@ -31,7 +31,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[command(name = "uds2sovdproxy", about = "UDS to SOVD proxy with DoIP server")]
 struct Args {
     /// Path to configuration file
-    #[arg(short, long, default_value = "config.toml")]
+    #[arg(short, long, default_value = "config/config.toml")]
     config: String,
 
     /// Override log level

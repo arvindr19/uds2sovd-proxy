@@ -176,19 +176,11 @@ async fn test_rdbi(
             .get(UDS_NEGATIVE_RESPONSE_NRC_OFFSET)
             .copied()
             .unwrap_or(0xFF);
-        // NRC 0x22 (conditionsNotCorrect) means the service was resolved in the MDD
-        // but the SOVD backend is unreachable — counts as a pass for CI without a SOVD server.
-        let passed = nrc == 0x22;
-        let label = if passed {
-            "no SOVD backend (OK)"
-        } else {
-            "FAIL"
-        };
         return TestResult {
             name,
             did,
-            passed,
-            detail: format!("NRC 0x{nrc:02X} ({label})"),
+            passed: false,
+            detail: format!("NRC 0x{nrc:02X}"),
         };
     }
 
@@ -307,18 +299,11 @@ async fn test_wdbi(
             .get(UDS_NEGATIVE_RESPONSE_NRC_OFFSET)
             .copied()
             .unwrap_or(0xFF);
-        // NRC 0x22 means service was resolved but SOVD backend unreachable — pass in CI.
-        let passed = nrc == 0x22;
-        let label = if passed {
-            "no SOVD backend (OK)"
-        } else {
-            "FAIL"
-        };
         return TestResult {
             name,
             did,
-            passed,
-            detail: format!("NRC 0x{nrc:02X} ({label})"),
+            passed: false,
+            detail: format!("NRC 0x{nrc:02X}"),
         };
     }
 

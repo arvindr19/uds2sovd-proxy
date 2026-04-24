@@ -426,3 +426,196 @@ mod tests {
         assert!(!is_opaque);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use cda_interfaces::{ParameterTypeMetadata, ResponseParameterInfo};
+
+    use super::super::uds_helpers::{find_mux_case_prefix, has_mux_case_for_did_exact};
+
+    /// Build a minimal `ResponseParameterInfo` MUX-case entry for test fixtures.
+    fn mux_case(name: &str, coded_lower: u64) -> ResponseParameterInfo {
+        ResponseParameterInfo {
+            name: format!("__mux_case__/{name}"),
+            semantic: None,
+            param_type: ParameterTypeMetadata::CodedConst {
+                coded_value: coded_lower.to_string(),
+            },
+            byte_position: 0,
+            bit_position: 0,
+            byte_size: None,
+        }
+    }
+
+    /// Build a plain VALUE parameter at a given byte position.
+    fn value_param(name: &str, pos: u32, size: u32) -> ResponseParameterInfo {
+        ResponseParameterInfo {
+            name: name.to_string(),
+            semantic: None,
+            param_type: ParameterTypeMetadata::Value {
+                physical_default_value: None,
+                coded_default_value: None,
+                compu_scales: vec![],
+            },
+            byte_position: pos,
+            bit_position: 0,
+            byte_size: Some(size),
+        }
+    }
+
+    // ── has_mux_case_for_did_exact ────────────────────────────────────────────
+
+    #[test]
+    fn test_has_mux_exact_match() {
+        let meta = vec![mux_case("VIN", 0xF190)];
+        assert!(has_mux_case_for_did_exact(&meta, 0xF190));
+    }
+
+    #[test]
+    fn test_has_mux_exact_no_match() {
+        let meta = vec![mux_case("VIN", 0xF190)];
+        // 0xF191 is one beyond the only entry — no match.
+        assert!(!has_mux_case_for_did_exact(&meta, 0xF191));
+    }
+
+    #[test]
+    fn test_has_mux_exact_vs_floor_semantics() {
+        // Floor matching (find_mux_case_prefix) would return the 0xF100 case for
+        // 0xF103, but has_mux_case_for_did_exact must NOT.
+        let meta = vec![mux_case("RANGE", 0xF100)];
+        assert!(!has_mux_case_for_did_exact(&meta, 0xF103));
+        // Only the exact value matches.
+        assert!(has_mux_case_for_did_exact(&meta, 0xF100));
+    }
+
+    #[test]
+    fn test_has_mux_exact_empty_meta() {
+        assert!(!has_mux_case_for_did_exact(&[], 0xF190));
+    }
+
+    #[test]
+    fn test_has_mux_exact_non_mux_params_ignored() {
+        let meta = vec![value_param("DATA", 3, 17)];
+        assert!(!has_mux_case_for_did_exact(&meta, 0x0000));
+    }
+
+    // ── find_mux_case_prefix (floor) vs has_mux_case_for_did_exact ───────────
+
+    #[test]
+    fn test_floor_vs_exact_differ_for_range_case() {
+        let meta = vec![mux_case("RANGE", 0xF100), mux_case("OTHER", 0xF200)];
+        // Floor: 0xF103 falls in the 0xF100 range → prefix returned.
+        assert_eq!(
+            find_mux_case_prefix(&meta, 0xF103),
+            Some("RANGE/".to_string())
+        );
+        // Exact: 0xF103 has no exact entry → false.
+        assert!(!has_mux_case_for_did_exact(&meta, 0xF103));
+        // But 0xF100 itself is an exact hit.
+        assert!(has_mux_case_for_did_exact(&meta, 0xF100));
+    }
+
+    // ── opaque-response heuristic ─────────────────────────────────────────────
+    // The heuristic inside `get_enriched_response_metadata_with_source` checks:
+    //   is_opaque = data_params.len() == 1 && first.byte_size.is_none() && !first.name.contains('/')
+    // We test the data-model conditions that drive it directly.
+
+    #[test]
+    fn test_opaque_heuristic_single_none_size_param() {
+        // Only one VALUE param with byte_size = None and no '/' in name → opaque.
+        let param = ResponseParameterInfo {
+            name: "STRUCTURE_DATA".to_string(),
+            semantic: None,
+            param_type: ParameterTypeMetadata::Value {
+                physical_default_value: None,
+                coded_default_value: None,
+                compu_scales: vec![],
+            },
+            byte_position: 3,
+            bit_position: 0,
+            byte_size: None,
+        };
+        let data_params: Vec<_> = std::slice::from_ref(&param)
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.param_type,
+                    ParameterTypeMetadata::Value { .. } | ParameterTypeMetadata::PhysConst { .. }
+                )
+            })
+            .collect();
+
+        let first = data_params.first().unwrap();
+        let is_opaque =
+            data_params.len() == 1 && first.byte_size.is_none() && !first.name.contains('/');
+        assert!(is_opaque);
+    }
+
+    #[test]
+    fn test_opaque_heuristic_sized_param_not_opaque() {
+        // A VALUE param WITH a byte_size is NOT opaque (it has a known layout).
+        let param = value_param("DATA", 3, 17);
+        let data_params: Vec<_> = std::slice::from_ref(&param)
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.param_type,
+                    ParameterTypeMetadata::Value { .. } | ParameterTypeMetadata::PhysConst { .. }
+                )
+            })
+            .collect();
+        let first = data_params.first().unwrap();
+        let is_opaque =
+            data_params.len() == 1 && first.byte_size.is_none() && !first.name.contains('/');
+        assert!(!is_opaque);
+    }
+
+    #[test]
+    fn test_opaque_heuristic_mux_subparam_not_opaque() {
+        // A MUX sub-param has '/' in its name → not opaque even if byte_size is None.
+        let param = ResponseParameterInfo {
+            name: "__mux_case__/VIN/DATA".to_string(),
+            semantic: None,
+            param_type: ParameterTypeMetadata::Value {
+                physical_default_value: None,
+                coded_default_value: None,
+                compu_scales: vec![],
+            },
+            byte_position: 3,
+            bit_position: 0,
+            byte_size: None,
+        };
+        let data_params: Vec<_> = std::slice::from_ref(&param)
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.param_type,
+                    ParameterTypeMetadata::Value { .. } | ParameterTypeMetadata::PhysConst { .. }
+                )
+            })
+            .collect();
+        let first = data_params.first().unwrap();
+        let is_opaque =
+            data_params.len() == 1 && first.byte_size.is_none() && !first.name.contains('/');
+        assert!(!is_opaque);
+    }
+
+    #[test]
+    fn test_opaque_heuristic_multiple_params_not_opaque() {
+        // Multiple VALUE params → structured layout, NOT opaque.
+        let params = vec![value_param("FIELD_A", 3, 2), value_param("FIELD_B", 5, 1)];
+        let data_params: Vec<_> = params
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.param_type,
+                    ParameterTypeMetadata::Value { .. } | ParameterTypeMetadata::PhysConst { .. }
+                )
+            })
+            .collect();
+        let first = data_params.first().unwrap();
+        let is_opaque =
+            data_params.len() == 1 && first.byte_size.is_none() && !first.name.contains('/');
+        assert!(!is_opaque);
+    }
+}

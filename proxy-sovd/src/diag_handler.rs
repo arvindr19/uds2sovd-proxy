@@ -13,7 +13,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use proxy_core::{Config, DiagHandler, ProxyError, Result, ServiceResolver, error::UdsError};
+use proxy_core::{Config, DiagHandler, ProxyError, ResolvedService, Result, ServiceResolver, error::UdsError};
 use tracing::info;
 
 use crate::mapper::SovdMapper;
@@ -64,7 +64,7 @@ impl DiagHandler for SovdDiagHandler {
             .ecu_manager()
             .ok_or_else(|| ProxyError::Mdd("No MDD database loaded".to_string()))?;
 
-        let (service_name, parsed_data) = mgr
+        let ResolvedService { name: service_name, params: parsed_data } = mgr
             .resolve_read_service(did, uds_request)
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;
@@ -87,7 +87,7 @@ impl DiagHandler for SovdDiagHandler {
             .ecu_manager()
             .ok_or_else(|| ProxyError::Mdd("No MDD database loaded".to_string()))?;
 
-        let (service_name, parsed_data) = mgr
+        let ResolvedService { name: service_name, params: parsed_data } = mgr
             .resolve_write_service(did, uds_request)
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;

@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
         config.ecu.default_name
     );
 
-    // Create SOVD client, mapper, and DiagHandler implementation
+    // Create SOVD client, mapper, and diagnostic handler
     let sovd_client = SovdClient::new(config.sovd.clone())
         .map_err(|e| ProxyError::Config(format!("Failed to create SOVD client: {e}")))?;
     let sovd_mapper = SovdMapper::new((*config).clone(), sovd_client);

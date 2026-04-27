@@ -1587,7 +1587,6 @@ dependencies = [
 name = "proxy-sovd"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "cda-interfaces",
  "proxy-core",
  "reqwest",

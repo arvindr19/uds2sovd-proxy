@@ -10,14 +10,53 @@
  * https://www.apache.org/licenses/LICENSE-2.0
  */
 
-//! UDS helper functions for encoding, decoding, and service metadata queries.
+//! UDS helper functions, types for encoding, decoding, and service metadata queries.
 //!
-//! Pure functions used across the [`super::ServiceResolver`] implementation:
-//! DID extraction, MUX-case matching, value encoding, and payload construction.
+//! Pure functions and types used across the [`super::ServiceResolver`] implementation:
+//! DID extraction, MUX-case matching, value encoding, payload construction, and
+//! structured access to UDS response bytes.
 
 use cda_interfaces::{
-    CompuScaleInfo, DiagCommType, ResponseParameterInfo, ServiceParameterMetadata, ServicePayload,
+    CompuScaleInfo, DiagComm, DiagCommType, ResponseParameterInfo, ServiceParameterMetadata,
+    ServicePayload, service_ids,
 };
+
+use super::UDS_NEGATIVE_RESPONSE_MIN_LEN;
+
+/// Typed accessor for raw UDS response bytes.
+///
+/// Wraps a byte slice and exposes structured accessors for UDS response fields,
+/// hiding direct index arithmetic from callers.
+pub struct UdsResponse<'a>(&'a [u8]);
+
+impl<'a> UdsResponse<'a> {
+    /// Wrap raw UDS response bytes.
+    #[must_use]
+    pub fn new(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
+
+    /// Service Identifier byte of the response.
+    #[must_use]
+    pub fn sid(&self) -> Option<u8> {
+        self.0.first().copied()
+    }
+
+    /// Returns `true` if this is a negative response (SID `0x7F`).
+    #[must_use]
+    pub fn is_negative(&self) -> bool {
+        self.0.len() >= UDS_NEGATIVE_RESPONSE_MIN_LEN
+            && self.sid() == Some(service_ids::NEGATIVE_RESPONSE)
+    }
+
+    /// Extract the Negative Response Code from a negative response.
+    ///
+    /// Returns `None` if this is not a negative response or the byte is absent.
+    #[must_use]
+    pub fn nrc(&self) -> Option<u8> {
+        self.is_negative().then(|| self.0.get(2).copied()).flatten()
+    }
+}
 
 /// Extract the 16-bit DID from UDS payload bytes at offset 1–2.
 ///
@@ -312,6 +351,20 @@ pub(super) fn value_to_bytes(value: Option<&serde_json::Value>) -> Vec<u8> {
             .collect(),
         serde_json::Value::Bool(b) => vec![u8::from(*b)],
         _ => Vec::new(),
+    }
+}
+
+/// Create a [`DiagComm`] for the given service name and UDS service identifier.
+///
+/// Centralises the repeated inline construction so that callers never have to
+/// name [`DiagComm`] directly.  Both `name` and `lookup_name` are set to the
+/// same value, which is what the CDA requires for service dispatch.
+pub(super) fn make_diag_comm(service_name: &str, service_id: u8) -> DiagComm {
+    let name = service_name.to_string();
+    DiagComm {
+        lookup_name: Some(name.clone()),
+        name,
+        type_: diag_comm_type(service_id),
     }
 }
 

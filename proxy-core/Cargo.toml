@@ -13,7 +13,7 @@ name = "proxy-core"
 version.workspace = true
 edition.workspace = true
 publish = false
-description = "Shared types, errors, MDD engine, and DiagHandler trait for the UDS2SOVD proxy"
+description = "Shared types, errors, and MDD engine for the UDS2SOVD proxy"
 homepage.workspace = true
 license.workspace = true
 
@@ -22,7 +22,6 @@ cda-core = { workspace = true }
 cda-database = { workspace = true }
 cda-interfaces = { workspace = true }
 cda-plugin-security = { workspace = true }
-async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

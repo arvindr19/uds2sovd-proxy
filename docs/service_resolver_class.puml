@@ -33,10 +33,9 @@ package "proxy-core::service_resolver" {
         + ecu_name() : &str
         + {static} is_negative_response(uds) : bool
         + {static} get_nrc(uds) : Option<u8>
-        == resolve.rs — DID → service name ==
-        + <<async>> resolve_read_service(did, uds) : Option<(String, Map)>
-        + <<async>> resolve_write_service(did, uds) : Option<(String, Map)>
-        + <<async>> parse_request(name, uds) : Result<Map>
+        == resolve.rs — DID --> service name ==
+        + <<async>> resolve_read_service(did, uds) : Option<ResolvedService>
+        + <<async>> resolve_write_service(did, uds) : Option<ResolvedService>
         == response.rs — encode UDS response ==
         + <<async>> build_response(name, sid, did, data) : Result<Vec<u8>>
         == metadata.rs — MDD parameter queries ==
@@ -51,18 +50,18 @@ package "proxy-core::service_resolver" {
 
         <b>Service resolution algorithm (resolve.rs):</b>
         1. lookup_diagcomms_by_request_prefix([SID,DID_HI,DID_LO])
-        2. Single match  →  service name found (fast path)
-        3. Multiple candidates  →  inspect request parameter metadata:
+        2. Single match  -->  service name found (fast path)
+        3. Multiple candidates  -->  inspect request parameter metadata:
            • CodedConst   — exact DID value match
            • PhysConst    — coded_value or create_uds_payload probe
            • Value        — coded_default or CompuScale range match
-        4. No match  →  log error, return None (no fallback)
+        4. No match  -->  log error, return None (no fallback)
 
         <b>Response encoding (response.rs):</b>
         Walk MDD POS-RESPONSE parameters:
-        • CODED-CONST        → fixed byte (e.g. response SID 0x62)
-        • MatchingRequestParam → echo DID bytes from request
-        • VALUE              → SOVD JSON value at MDD-defined offset
+        • CODED-CONST        --> fixed byte (e.g. response SID 0x62)
+        • MatchingRequestParam --> echo DID bytes from request
+        • VALUE              --> SOVD JSON value at MDD-defined offset
         Opaque STRUCTURE types trigger MUX sibling lookup.
     end note
 
@@ -113,7 +112,7 @@ package "cda-core  <size:10>(external path dep)</size>" #LightGray {
 
     class "CdaEcuManager\n<size:10><DefaultSecurityPluginData></size>" as CdaEcuManager {
         ' Loads an MDD file (DiagnosticDatabase) and
-        ' implements EcuManagerTrait for UDS ↔ MDD ops.
+        ' implements EcuManagerTrait for UDS <-> MDD ops.
     }
 
     CdaEcuManager ..|> EcuManagerTrait
@@ -121,16 +120,9 @@ package "cda-core  <size:10>(external path dep)</size>" #LightGray {
 
 ' ─────────────────────────────────────────────────────────────────
 ' proxy-core public API consumed by proxy-sovd / proxy-doip
+' DiagHandler trait removed — no abstraction needed with one impl.
 ' ─────────────────────────────────────────────────────────────────
 package "proxy-core  <size:10>(public API)</size>" #LightYellow {
-
-    interface DiagHandler <<async_trait>> {
-        ' Implemented by SovdDiagHandler in proxy-sovd.
-        ' ServiceResolver is a field of SovdDiagHandler —
-        ' not a DiagHandler implementor itself.
-        + <<async>> handle_read_did(did, uds) : Result<Vec<u8>>
-        + <<async>> handle_write_did(did, uds) : Result<Vec<u8>>
-    }
 
     class Config {
         + server : ServerConfig
@@ -139,6 +131,11 @@ package "proxy-core  <size:10>(public API)</size>" #LightYellow {
         + logging : LoggingConfig
         --
         + {static} from_file(path) : Result<Self>
+    }
+
+    class ResolvedService <<struct>> {
+        + name : String
+        + params : Map
     }
 }
 

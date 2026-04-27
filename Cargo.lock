@@ -1316,7 +1316,6 @@ dependencies = [
 name = "proxy-core"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "cda-core",
  "cda-database",
  "cda-interfaces",

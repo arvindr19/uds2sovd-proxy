@@ -23,8 +23,8 @@ use cda_interfaces::{
 use super::{
     ServiceResolver, UDS_POSITIVE_RESPONSE_MIN_SIZE,
     uds_helpers::{
-        encode_unsigned_be, encode_value_at, find_mux_case_prefix, make_service_payload,
-        value_to_bytes,
+        encode_unsigned_be, encode_value_at, find_mux_case_prefix, make_diag_comm,
+        make_service_payload, value_to_bytes,
     },
 };
 
@@ -146,7 +146,7 @@ impl ServiceResolver {
     /// Called only when `tracing::Level::DEBUG` is enabled — failures are logged
     /// as warnings but never block the response (non-blocking).
     async fn validate_response(&self, service_name: &str, request_sid: u8, uds_response: &[u8]) {
-        let diag_comm = self.make_diag_comm(service_name, request_sid);
+        let diag_comm = make_diag_comm(service_name, request_sid);
         let payload = make_service_payload(uds_response);
         let manager = self.manager.read().await;
         match manager.convert_from_uds(&diag_comm, &payload, true).await {
@@ -332,5 +332,260 @@ impl ServiceResolver {
             response
         );
         Some((response, effective_service))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cda_interfaces::{ParameterTypeMetadata, ResponseParameterInfo};
+
+    use super::super::uds_helpers::{
+        encode_unsigned_be, encode_value_at, find_mux_case_prefix, value_to_bytes,
+    };
+
+    /// Numbers are right-aligned (big-endian) in the target field.
+    #[test]
+    fn test_encode_value_at_number_right_aligned() {
+        let mut buf = [0u8; 5];
+        encode_value_at(&mut buf, 1, 2, Some(&serde_json::json!(0xF1_90u64)));
+        assert_eq!(buf, [0x00, 0xF1, 0x90, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_encode_value_at_number_single_byte() {
+        let mut buf = [0u8; 3];
+        encode_value_at(&mut buf, 0, 1, Some(&serde_json::json!(0x62u64)));
+        assert_eq!(buf, [0x62, 0x00, 0x00]);
+    }
+
+    /// A string value is written left-aligned (byte-for-byte).
+    #[test]
+    fn test_encode_value_at_string() {
+        let mut buf = [0u8; 6];
+        encode_value_at(&mut buf, 1, 4, Some(&serde_json::json!("VIN!")));
+        assert_eq!(&buf[1..5], b"VIN!");
+        assert_eq!(buf[0], 0x00);
+        assert_eq!(buf[5], 0x00);
+    }
+
+    /// A string longer than `size` is truncated.
+    #[test]
+    fn test_encode_value_at_string_truncated() {
+        let mut buf = [0u8; 4];
+        encode_value_at(&mut buf, 0, 2, Some(&serde_json::json!("ABCDE")));
+        assert_eq!(&buf[..2], b"AB");
+        assert_eq!(buf[2], 0x00);
+    }
+
+    /// A JSON array encodes each element as one byte.
+    #[test]
+    fn test_encode_value_at_array() {
+        let mut buf = [0u8; 5];
+        encode_value_at(
+            &mut buf,
+            1,
+            3,
+            Some(&serde_json::json!([0xDEu64, 0xADu64, 0xBEu64])),
+        );
+        assert_eq!(&buf[1..4], [0xDE, 0xAD, 0xBE]);
+    }
+
+    /// `true` encodes as 0x01, `false` as 0x00.
+    #[test]
+    fn test_encode_value_at_bool() {
+        let mut buf = [0u8; 2];
+        encode_value_at(&mut buf, 0, 1, Some(&serde_json::json!(true)));
+        assert_eq!(buf[0], 0x01);
+        encode_value_at(&mut buf, 1, 1, Some(&serde_json::json!(false)));
+        assert_eq!(buf[1], 0x00);
+    }
+
+    /// `None` leaves the buffer untouched.
+    #[test]
+    fn test_encode_value_at_none_noop() {
+        let mut buf = [0xFFu8; 4];
+        encode_value_at(&mut buf, 0, 4, None);
+        assert_eq!(buf, [0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    /// Out-of-bounds write is silently ignored.
+    #[test]
+    fn test_encode_value_at_out_of_bounds_noop() {
+        let mut buf = [0u8; 2];
+        // pos=1, size=3 → end=4 > buf.len()=2 → noop
+        encode_value_at(&mut buf, 1, 3, Some(&serde_json::json!(0xFFu64)));
+        assert_eq!(buf, [0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_value_to_bytes_number() {
+        assert_eq!(
+            value_to_bytes(Some(&serde_json::json!(0xF190u64))),
+            vec![0xF1, 0x90]
+        );
+    }
+
+    #[test]
+    fn test_value_to_bytes_string() {
+        assert_eq!(
+            value_to_bytes(Some(&serde_json::json!("AB"))),
+            b"AB".to_vec()
+        );
+    }
+
+    #[test]
+    fn test_value_to_bytes_array() {
+        assert_eq!(
+            value_to_bytes(Some(&serde_json::json!([0x01u64, 0x02u64]))),
+            vec![0x01, 0x02]
+        );
+    }
+
+    #[test]
+    fn test_value_to_bytes_none() {
+        assert_eq!(value_to_bytes(None), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn test_encode_unsigned_be_zero() {
+        assert_eq!(encode_unsigned_be(0), vec![0x00]);
+    }
+
+    #[test]
+    fn test_encode_unsigned_be_two_bytes() {
+        assert_eq!(encode_unsigned_be(0xF190), vec![0xF1, 0x90]);
+    }
+
+    /// Build a MUX-case marker `ResponseParameterInfo`.
+    fn mux_case_marker(name: &str, lower: u64) -> ResponseParameterInfo {
+        ResponseParameterInfo {
+            name: format!("__mux_case__/{name}"),
+            semantic: None,
+            param_type: ParameterTypeMetadata::CodedConst {
+                coded_value: lower.to_string(),
+            },
+            byte_position: 0,
+            bit_position: 0,
+            byte_size: None,
+        }
+    }
+
+    fn value_param(name: &str, pos: u32, size: u32) -> ResponseParameterInfo {
+        ResponseParameterInfo {
+            name: name.to_string(),
+            semantic: None,
+            param_type: ParameterTypeMetadata::Value {
+                physical_default_value: None,
+                coded_default_value: None,
+                compu_scales: vec![],
+            },
+            byte_position: pos,
+            bit_position: 0,
+            byte_size: Some(size),
+        }
+    }
+
+    fn coded_const_param(name: &str, pos: u32, size: u32, val: &str) -> ResponseParameterInfo {
+        ResponseParameterInfo {
+            name: name.to_string(),
+            semantic: None,
+            param_type: ParameterTypeMetadata::CodedConst {
+                coded_value: val.to_string(),
+            },
+            byte_position: pos,
+            bit_position: 0,
+            byte_size: Some(size),
+        }
+    }
+
+    /// When a MUX case prefix matches the DID, only that case's sub-params
+    /// (and the top-level params without '/') are selected; the other case
+    /// sub-params are dropped.
+    #[test]
+    fn test_active_params_with_mux_case() {
+        let did: u16 = 0xF190;
+        // Sub-params use the case-name prefix (e.g. "VIN/"), NOT "__mux_case__/VIN/".
+        let meta = vec![
+            coded_const_param("SID", 0, 1, "98"), // top-level, no '/'
+            value_param("DID", 1, 2),             // top-level, no '/'
+            mux_case_marker("VIN", 0xF190),       // case marker for 0xF190
+            mux_case_marker("OTHER", 0xF100),     // different case marker
+            value_param("VIN/DATA", 3, 17),       // VIN sub-param
+            value_param("OTHER/DATA", 3, 4),      // OTHER sub-param → excluded
+        ];
+
+        let mux_case_prefix = find_mux_case_prefix(&meta, did);
+        let mux_marker_name: Option<String> = mux_case_prefix
+            .as_deref()
+            .map(|pfx| format!("__mux_case__/{}", pfx.trim_end_matches('/')));
+
+        let active: Vec<_> = meta
+            .iter()
+            .filter(|p| {
+                if !p.name.contains('/') {
+                    true
+                } else if let Some(prefix) = &mux_case_prefix {
+                    p.name.starts_with(prefix.as_str())
+                        || mux_marker_name.as_deref() == Some(p.name.as_str())
+                } else {
+                    !p.name.starts_with("__mux_case__/")
+                }
+            })
+            .map(|p| p.name.as_str())
+            .collect();
+
+        assert!(active.contains(&"SID"), "top-level SID must be kept");
+        assert!(active.contains(&"DID"), "top-level DID must be kept");
+        assert!(active.contains(&"VIN/DATA"), "VIN sub-param must be kept");
+        assert!(
+            !active.contains(&"OTHER/DATA"),
+            "OTHER sub-param must be excluded"
+        );
+    }
+
+    /// Without any MUX case (flat metadata), all params without '/' are kept
+    /// and any accidental `__mux_case__` entries are dropped.
+    #[test]
+    fn test_active_params_no_mux_case() {
+        let did: u16 = 0x1234;
+        let meta = vec![
+            coded_const_param("SID", 0, 1, "98"),
+            value_param("DATA", 3, 4),
+        ];
+
+        let mux_case_prefix = find_mux_case_prefix(&meta, did);
+        assert!(mux_case_prefix.is_none());
+
+        let active: Vec<_> = meta
+            .iter()
+            .filter(|p| !p.name.contains('/') || p.name.starts_with("__mux_case__/"))
+            .map(|p| p.name.as_str())
+            .collect();
+
+        assert_eq!(active, ["SID", "DATA"]);
+    }
+
+    /// `total_size` is the maximum of (`byte_position` + `effective_size`) across params.
+    #[test]
+    fn test_total_size_from_params() {
+        let params = vec![
+            coded_const_param("SID", 0, 1, "98"),
+            value_param("DID", 1, 2),
+            value_param("DATA", 3, 17),
+        ];
+        let effective_sizes: Vec<usize> = params
+            .iter()
+            .map(|p| p.byte_size.map_or(0, |s| s as usize))
+            .collect();
+
+        let total = params
+            .iter()
+            .zip(effective_sizes.iter())
+            .map(|(p, &sz)| (p.byte_position as usize).saturating_add(sz))
+            .max()
+            .unwrap_or(3);
+
+        // SID: 0+1=1, DID: 1+2=3, DATA: 3+17=20 → max = 20
+        assert_eq!(total, 20);
     }
 }

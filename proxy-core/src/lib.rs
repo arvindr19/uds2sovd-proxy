@@ -17,11 +17,9 @@
 //! [`ServiceResolver`] for UDS request/response processing.
 
 pub mod config;
-pub mod diag_handler;
 pub mod error;
 pub mod service_resolver;
 
 pub use config::Config;
-pub use diag_handler::DiagHandler;
 pub use error::{ProxyError, Result};
-pub use service_resolver::ServiceResolver;
+pub use service_resolver::{ResolvedService, ServiceResolver};

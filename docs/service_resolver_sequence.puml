@@ -1,0 +1,158 @@
+' SPDX-License-Identifier: Apache-2.0
+' SPDX-FileCopyrightText: 2026 The Contributors to Eclipse OpenSOVD (see CONTRIBUTORS)
+'
+' See the NOTICE file(s) distributed with this work for additional
+' information regarding copyright ownership.
+'
+' This program and the accompanying materials are made available under the
+' terms of the Apache License Version 2.0 which is available at
+' https://www.apache.org/licenses/LICENSE-2.0
+
+@startuml ServiceResolver Sequence Diagram
+
+title ServiceResolver: DID Resolution & Response Building\n<size:11><color:gray>Entry points: SovdDiagHandler.handle_read_did() / handle_write_did() (proxy-sovd)</color></size>
+
+actor "SovdDiagHandler\n(proxy-sovd)" as Client
+participant "ServiceResolver\n(resolve.rs)" as Resolver
+participant "ServiceResolver\n(metadata.rs)" as Meta
+participant "ServiceResolver\n(response.rs)" as Resp
+participant "CDA EcuManager" as CDA
+
+== READ Service Resolution ==
+
+Client -> Resolver: resolve_read_service(did, uds_bytes)
+activate Resolver
+
+Resolver -> Resolver: resolve_service(SID=0x22, did, uds_bytes)
+
+Resolver -> Resolver: resolve_service_did()
+note right: Step 1-2: Prefix lookup\n& candidate building
+
+Resolver -> CDA: lookup_diagcomms_by_request_prefix([0x22, DID_HI, DID_LO])
+activate CDA
+CDA --> Resolver: matching services
+deactivate CDA
+
+Resolver -> Resolver: build_did_candidates()
+note right: Fast path: single match\nelse: enumerate SID-matching\nservices via get_components_data_info()
+
+Resolver -> Resolver: match_candidate_did()
+note right: Step 3: Metadata matching\nCodedConst / PhysConst / Value DIDs
+
+Resolver -> CDA: get_request_parameter_metadata(candidate_name)
+activate CDA
+CDA --> Resolver: param metadata
+deactivate CDA
+
+alt CodedConst DID
+  Resolver -> Resolver: parse_u64_literal(coded_value)
+  note right: Exact match against DID
+else PhysConst DID
+  Resolver -> Resolver: probe_service_did() (optional)
+  note right: Encode dummy request,\nextract DID from payload
+  Resolver -> CDA: create_uds_payload()
+  activate CDA
+  CDA --> Resolver: encoded payload
+  deactivate CDA
+  Resolver -> Resolver: extract_did_from_uds()
+else Value DID
+  Resolver -> Resolver: did_matches_compu_scales()
+  note right: Range/list matching via MDD CompuScale
+end
+
+Resolver -> CDA: convert_request_from_uds()
+activate CDA
+CDA --> Resolver: parsed JSON params
+deactivate CDA
+
+Resolver --> Client: Option<ResolvedService { name, params }>
+deactivate Resolver
+
+== WRITE Service Handling ==
+
+note right of Client: Similar flow for WRITE services\nusing SID=0x2E and\nget_components_configurations_info()
+
+== Response Building ==
+
+Client -> Resp: build_response(service_name, sid, did, response_data)
+activate Resp
+
+Resp -> Resp: encode_response_from_metadata()
+
+Resp -> Meta: get_enriched_response_metadata_with_source(service_name, did)
+activate Meta
+
+Meta -> CDA: get_response_parameter_metadata(service_name)
+activate CDA
+CDA --> Meta: response param layout
+deactivate CDA
+
+note right of Meta: Opaque heuristic:\nSingle VALUE with byte_size=None\nand no '/' in name?
+
+alt opaque STRUCTURE detected
+  Meta -> CDA: get_components_data_info()
+  activate CDA
+  CDA --> Meta: READ service components
+  deactivate CDA
+
+  Meta -> Meta: has_mux_case_for_did_exact(sibling_meta, did)
+  note right: Exact match — avoids\ncross-DOP false positives
+
+  Meta --> Resp: (enriched_meta, sibling_service_name)
+else standard response
+  Meta --> Resp: (base_meta, service_name)
+end
+
+deactivate Meta
+
+Resp -> Resp: mux_case_prefix = find_mux_case_prefix(meta, did)
+note right: Floor-based matching\nfor MUX case active params
+
+Resp -> Resp: filter active params by mux_case_prefix
+note right: Select top-level params +\ncase-specific sub-params
+
+alt metadata available
+  Resp -> Resp: for each active param:
+  Resp -> Resp: encode_value_at(buf, pos, size, value)
+  note right: CodedConst -> fixed bytes\nMatchingRequestParam -> DID bytes\nValue -> encode_value_at()
+  Resp --> Resp: (encoded_bytes, effective_service)
+else no metadata (fallback)
+  Resp -> Resp: naive encoding via value_to_bytes()
+  note right: Iterate response_data\nString/Number/Array/Bool\nno MDD structure
+end
+
+alt DEBUG enabled
+  Resp -> Resp: validate_response()
+  Resp -> CDA: convert_from_uds()
+  activate CDA
+  CDA --> Resp: JSON
+  deactivate CDA
+  note right: Round-trip validation:\nwarn on mismatch, never blocks
+end
+
+Resp --> Client: Result<Vec<u8>, DiagServiceError>
+deactivate Resp
+
+note right of Client
+
+
+  **Module Layout (impl ServiceResolver):**
+
+  - **resolve.rs**: DID -> service resolution,
+    candidate building, metadata matching
+  - **response.rs**: UDS response encoding,
+    round-trip validation (debug only)
+  - **metadata.rs**: MDD metadata queries,
+    MUX sibling enrichment
+  - **uds_helpers.rs**: Pure utilities —
+    encoding, decoding, MUX matching
+
+  **Resolution Algorithm (resolve.rs):**
+  1. Prefix lookup [SID, DID_HI, DID_LO]
+  2. Fast path: single prefix match -> return
+  3. Enumerate all SID-matching services
+  4. Match via CodedConst / PhysConst / Value
+  5. Parse request params inline via CDA
+end note
+
+@enduml

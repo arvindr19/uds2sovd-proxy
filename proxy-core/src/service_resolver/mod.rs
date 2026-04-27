@@ -58,12 +58,12 @@ use cda_interfaces::{
     FunctionalDescriptionConfig, HashMap, Protocol,
     datatypes::{ComParams, DatabaseNamingConvention, DiagnosticServiceAffixPosition},
     diagservices::DiagServiceResponseType,
-    service_ids,
 };
 use cda_plugin_security::DefaultSecurityPluginData;
 use tokio::sync::RwLock;
-use uds_helpers::diag_comm_type;
-pub use uds_helpers::{find_mux_case_prefix, has_mux_case_for_did_exact, parse_mux_coded_value};
+pub use uds_helpers::{
+    UdsResponse, find_mux_case_prefix, has_mux_case_for_did_exact, parse_mux_coded_value,
+};
 
 /// Minimum UDS negative response length: 0x7F + SID + NRC.
 const UDS_NEGATIVE_RESPONSE_MIN_LEN: usize = 3;
@@ -71,16 +71,29 @@ const UDS_NEGATIVE_RESPONSE_MIN_LEN: usize = 3;
 /// Minimum UDS positive response buffer size: response SID (1) + DID high (1) + DID low (1).
 const UDS_POSITIVE_RESPONSE_MIN_SIZE: usize = 3;
 
+/// Result of a successful UDS DID-to-service resolution.
+pub struct ResolvedService {
+    /// The matched MDD service name (e.g. `"RDBI_VIN"`).
+    pub name: String,
+    /// Decoded request parameters as a JSON map.
+    ///
+    /// Empty when the CDA request parser is unavailable for the matched service.
+    pub params: serde_json::Map<String, serde_json::Value>,
+}
+
 /// Wraps the CDA's [`EcuManager`] with async locking
 /// to provide MDD-driven UDS encoding, decoding, and service resolution
-/// for the proxy.
+#[derive(Clone)]
 pub struct ServiceResolver {
+    /// All post-construction access uses `.read()` for concurrent reads.
+    /// The write lock is reserved for future runtime variant detection
+    /// (`detect_variant` requires `&mut CdaEcuManager`).
     manager: Arc<RwLock<CdaEcuManager<DefaultSecurityPluginData>>>,
     ecu_name: String,
 }
 
 impl ServiceResolver {
-    /// Create new ECU manager from MDD database.
+    /// Create new service resolver from ECU name and MDD database.
     ///
     /// # Arguments
     /// * `ecu_name` - Name of the ECU
@@ -166,48 +179,32 @@ impl ServiceResolver {
         let mut responses: HashMap<String, DiagServiceResponseStruct> = HashMap::default();
         responses.insert("__variant_init__".to_string(), dummy_response);
 
-        match manager.detect_variant(responses).await {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let variant = manager.variant();
-                if variant.name.is_some() {
+        manager
+            .detect_variant(responses)
+            .await
+            .or_else(|e| match manager.variant().name {
+                Some(ref name) => {
                     tracing::info!(
                         "Base variant '{}' activated (state chart init skipped: {})",
-                        variant.name.as_deref().unwrap_or("unknown"),
+                        name,
                         e
                     );
                     Ok(())
-                } else {
-                    Err(e)
                 }
-            }
-        }
+                None => Err(e),
+            })
     }
 
     /// Check if a UDS response is negative (SID 0x7F).
     #[must_use]
     pub fn is_negative_response(uds_response: &[u8]) -> bool {
-        uds_response.len() >= UDS_NEGATIVE_RESPONSE_MIN_LEN
-            && uds_response.first().copied() == Some(service_ids::NEGATIVE_RESPONSE)
+        UdsResponse::new(uds_response).is_negative()
     }
 
     /// Extract NRC (Negative Response Code) from a negative response.
     #[must_use]
     pub fn get_nrc(uds_response: &[u8]) -> Option<u8> {
-        if Self::is_negative_response(uds_response) {
-            uds_response.get(2).copied()
-        } else {
-            None
-        }
-    }
-
-    #[allow(clippy::unused_self)]
-    pub(super) fn make_diag_comm(&self, service_name: &str, service_id: u8) -> DiagComm {
-        DiagComm {
-            name: service_name.to_string(),
-            type_: diag_comm_type(service_id),
-            lookup_name: Some(service_name.to_string()),
-        }
+        UdsResponse::new(uds_response).nrc()
     }
 
     /// Get ECU name.

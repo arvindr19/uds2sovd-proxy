@@ -1584,10 +1584,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxy-doip"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cda-interfaces",
+ "proxy-core",
+ "proxy-sovd",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "proxy-sovd"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "cda-interfaces",
  "proxy-core",
  "reqwest",

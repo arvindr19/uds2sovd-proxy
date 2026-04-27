@@ -12,19 +12,18 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use async_trait::async_trait;
-use proxy_core::{Config, DiagHandler, ProxyError, ResolvedService, Result, ServiceResolver, error::UdsError};
+use proxy_core::{Config, ProxyError, ResolvedService, Result, ServiceResolver, error::UdsError};
 use tracing::info;
 
 use crate::mapper::SovdMapper;
 
-/// SOVD-backed implementation of [`DiagHandler`].
+/// SOVD-backed diagnostic handler.
 ///
 /// Combines MDD-based service resolution ([`ServiceResolver`]) with SOVD
 /// gateway communication ([`SovdMapper`]) to process UDS diagnostic requests.
 ///
 /// Constructed in `proxy-main` and injected into the `DoIP` server as
-/// `Arc<dyn DiagHandler>`.
+/// `Arc<SovdDiagHandler>`.
 pub struct SovdDiagHandler {
     /// Shared proxy configuration.
     config: Arc<Config>,
@@ -57,14 +56,26 @@ impl SovdDiagHandler {
     }
 }
 
-#[async_trait]
-impl DiagHandler for SovdDiagHandler {
-    async fn handle_read_did(&self, did: u16, uds_request: &[u8]) -> Result<Vec<u8>> {
+impl SovdDiagHandler {
+    /// Process a `ReadDataByIdentifier` (0x22) request.
+    ///
+    /// `did` is the extracted 16-bit Data Identifier.
+    /// `uds_request` is the full UDS request bytes including the SID byte.
+    ///
+    /// Returns the complete UDS response bytes (positive or negative).
+    ///
+    /// # Errors
+    /// Returns an error if no MDD database is loaded, the DID is unknown,
+    /// or the SOVD gateway request fails.
+    pub async fn handle_read_did(&self, did: u16, uds_request: &[u8]) -> Result<Vec<u8>> {
         let mgr = self
             .ecu_manager()
             .ok_or_else(|| ProxyError::Mdd("No MDD database loaded".to_string()))?;
 
-        let ResolvedService { name: service_name, params: parsed_data } = mgr
+        let ResolvedService {
+            name: service_name,
+            params: parsed_data,
+        } = mgr
             .resolve_read_service(did, uds_request)
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;
@@ -82,12 +93,25 @@ impl DiagHandler for SovdDiagHandler {
             .await
     }
 
-    async fn handle_write_did(&self, did: u16, uds_request: &[u8]) -> Result<Vec<u8>> {
+    /// Process a `WriteDataByIdentifier` (0x2E) request.
+    ///
+    /// `did` is the extracted 16-bit Data Identifier.
+    /// `uds_request` is the full UDS request bytes including the SID byte.
+    ///
+    /// Returns the complete UDS response bytes (positive or negative).
+    ///
+    /// # Errors
+    /// Returns an error if no MDD database is loaded, the DID is unknown,
+    /// or the SOVD gateway request fails.
+    pub async fn handle_write_did(&self, did: u16, uds_request: &[u8]) -> Result<Vec<u8>> {
         let mgr = self
             .ecu_manager()
             .ok_or_else(|| ProxyError::Mdd("No MDD database loaded".to_string()))?;
 
-        let ResolvedService { name: service_name, params: parsed_data } = mgr
+        let ResolvedService {
+            name: service_name,
+            params: parsed_data,
+        } = mgr
             .resolve_write_service(did, uds_request)
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;

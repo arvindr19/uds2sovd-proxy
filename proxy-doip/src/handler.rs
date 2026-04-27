@@ -133,7 +133,11 @@ pub struct ConnectionHandler {
 
 impl ConnectionHandler {
     /// Create a new connection handler.
-    pub fn new(config: Arc<Config>, diag_handler: Arc<SovdDiagHandler>, stream: TcpStream) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        diag_handler: Arc<SovdDiagHandler>,
+        stream: TcpStream,
+    ) -> Self {
         Self {
             config,
             diag_handler,

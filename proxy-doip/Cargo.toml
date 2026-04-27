@@ -19,6 +19,7 @@ license.workspace = true
 
 [dependencies]
 proxy-core = { workspace = true }
+proxy-sovd = { workspace = true }
 cda-interfaces = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }

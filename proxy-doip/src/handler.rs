@@ -14,9 +14,10 @@ use std::sync::Arc;
 
 use cda_interfaces::service_ids;
 use proxy_core::{
-    Config, DiagHandler, Result,
+    Config, Result,
     error::{Nrc, UdsError},
 };
+use proxy_sovd::SovdDiagHandler;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -121,7 +122,7 @@ pub struct ConnectionHandler {
     /// Shared proxy configuration.
     config: Arc<Config>,
     /// Backend handler for UDS request processing.
-    diag_handler: Arc<dyn DiagHandler + Send + Sync>,
+    diag_handler: Arc<SovdDiagHandler>,
     /// Active TCP stream for this connection.
     stream: TcpStream,
     /// Routing activation session state.
@@ -132,7 +133,7 @@ pub struct ConnectionHandler {
 
 impl ConnectionHandler {
     /// Create a new connection handler.
-    pub fn new(config: Arc<Config>, diag_handler: Arc<dyn DiagHandler + Send + Sync>, stream: TcpStream) -> Self {
+    pub fn new(config: Arc<Config>, diag_handler: Arc<SovdDiagHandler>, stream: TcpStream) -> Self {
         Self {
             config,
             diag_handler,

@@ -66,7 +66,7 @@ impl SovdMapper {
         &self,
         did: u16,
         uds_request: &[u8],
-        ecu_manager: Option<&ServiceResolver>,
+        ecu_manager: &ServiceResolver,
         service_name: &str,
         parsed_data: Option<Map<String, Value>>,
     ) -> Result<Vec<u8>> {
@@ -128,16 +128,15 @@ impl SovdMapper {
 
         let sovd_endpoint = service_name.to_lowercase();
 
-        let sovd_write_data = parsed_data;
         debug!(
             "[WDBI] SOVD JSON data: {}",
-            serde_json::to_string_pretty(&sovd_write_data).unwrap_or_default()
+            serde_json::to_string_pretty(&parsed_data).unwrap_or_default()
         );
 
         let component = &self.config.ecu.default_name;
 
         self.sovd_client
-            .write_data(component, &sovd_endpoint, sovd_write_data)
+            .write_data(component, &sovd_endpoint, parsed_data)
             .await?;
 
         let uds_response = vec![
@@ -160,7 +159,7 @@ impl SovdMapper {
         did: u16,
         service_name: &str,
         sovd_endpoint: &str,
-        ecu_manager: Option<&ServiceResolver>,
+        ecu_manager: &ServiceResolver,
     ) -> Result<DataResponse> {
         let would_be_url = format!(
             "{}/vehicle/{}/components/{}/data/{}",
@@ -174,13 +173,10 @@ impl SovdMapper {
             would_be_url
         );
 
-        let mgr = ecu_manager.ok_or_else(|| {
-            SovdError::SchemaMismatch(
-                "ECU manager required for mock response generation".to_string(),
-            )
-        })?;
-
-        let meta = match mgr.get_enriched_response_metadata(service_name, did).await {
+        let meta = match ecu_manager
+            .get_enriched_response_metadata(service_name, did)
+            .await
+        {
             Ok(m) => m,
             Err(e) => {
                 debug!(
@@ -188,7 +184,8 @@ impl SovdMapper {
                      basic POS-RESPONSE metadata",
                     service_name, e
                 );
-                mgr.get_response_parameter_metadata(service_name)
+                ecu_manager
+                    .get_response_parameter_metadata(service_name)
                     .await
                     .map_err(|inner| {
                         SovdError::SchemaMismatch(format!(
@@ -222,14 +219,10 @@ impl SovdMapper {
         &self,
         did: u16,
         sovd_response: &DataResponse,
-        ecu_manager: Option<&ServiceResolver>,
+        ecu_manager: &ServiceResolver,
         service_name: &str,
     ) -> Result<Vec<u8>> {
         use cda_interfaces::HashMap as CdaHashMap;
-
-        let mgr = ecu_manager.ok_or_else(|| {
-            SovdError::SchemaMismatch("ECU manager required for MDD encoding".to_string())
-        })?;
 
         let mut response_data: CdaHashMap<String, Value> = CdaHashMap::default();
 
@@ -237,7 +230,7 @@ impl SovdMapper {
             response_data.insert(k.clone(), v.clone());
         }
 
-        let uds_bytes = mgr
+        let uds_bytes = ecu_manager
             .build_response(
                 service_name,
                 service_ids::READ_DATA_BY_IDENTIFIER,

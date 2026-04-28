@@ -13,7 +13,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use proxy_core::{Config, ProxyError, ResolvedService, Result, ServiceResolver, error::UdsError};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::mapper::SovdMapper;
 
@@ -50,9 +50,13 @@ impl SovdDiagHandler {
 
     fn ecu_manager(&self) -> Option<&ServiceResolver> {
         let ecu_name = &self.config.ecu.default_name;
-        self.ecu_managers
-            .get(ecu_name)
-            .or_else(|| self.ecu_managers.values().next())
+        self.ecu_managers.get(ecu_name).or_else(|| {
+            warn!(
+                "[ECU] Default ECU '{}' not found, falling back to first available",
+                ecu_name
+            );
+            self.ecu_managers.values().next()
+        })
     }
 }
 
@@ -83,13 +87,7 @@ impl SovdDiagHandler {
         info!("[MDD] READ service found: '{}'", service_name);
 
         self.mapper
-            .process_read_data_request(
-                did,
-                uds_request,
-                Some(mgr),
-                &service_name,
-                Some(parsed_data),
-            )
+            .process_read_data_request(did, uds_request, mgr, &service_name, Some(parsed_data))
             .await
     }
 

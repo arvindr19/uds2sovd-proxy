@@ -324,7 +324,7 @@ impl SovdClient {
                         // comes from the ECU / SOVD server in production.
                         Self::mock_opaque_payload(did)
                     } else {
-                        Self::default_value_for_param(&key, p.byte_size, p.semantic.as_deref())
+                        Self::default_value_for_param(p.byte_size)
                     };
                     data.insert(key, value);
                 }
@@ -338,15 +338,12 @@ impl SovdClient {
     /// byte size only.
     ///
     /// This is MDD-agnostic — no ECU-specific name patterns or DID heuristics.
-    /// Produces zero-valued numerics or zero-filled byte arrays that satisfy
-    /// the MDD response encoder without assuming a particular ECU.
-    fn default_value_for_param(
-        _name: &str,
-        byte_size: Option<u32>,
-        _semantic: Option<&str>,
-    ) -> Value {
+    /// For small fields (1–8 bytes), produces a numeric equal to the byte
+    /// size as a distinguishable non-zero placeholder.  Larger fields are
+    /// emitted as zero-filled byte arrays.
+    fn default_value_for_param(byte_size: Option<u32>) -> Value {
         match byte_size {
-            Some(sz @ 1..=8) => Value::Number(0u64.wrapping_add(u64::from(sz)).into()),
+            Some(sz @ 1..=8) => Value::Number(u64::from(sz).into()),
             Some(sz) => {
                 // Large fields: zero-filled byte array.
                 Value::Array(vec![Value::Number(0.into()); sz as usize])
@@ -682,21 +679,21 @@ mod tests {
     fn test_default_value_for_param_generic() {
         // 1-byte VALUE -> numeric 1
         assert_eq!(
-            SovdClient::default_value_for_param("ANY_FIELD", Some(1), None),
+            SovdClient::default_value_for_param(Some(1)),
             Value::Number(1.into()),
         );
         // 2-byte VALUE -> numeric 2
         assert_eq!(
-            SovdClient::default_value_for_param("VIN", Some(2), Some("DATA")),
+            SovdClient::default_value_for_param(Some(2)),
             Value::Number(2.into()),
         );
         // 17-byte VALUE -> zero-filled array (no VIN heuristic)
-        let val = SovdClient::default_value_for_param("VIN", Some(17), None);
+        let val = SovdClient::default_value_for_param(Some(17));
         let arr = val.as_array().unwrap();
         assert_eq!(arr.len(), 17);
         // None byte_size -> 0
         assert_eq!(
-            SovdClient::default_value_for_param("X", None, None),
+            SovdClient::default_value_for_param(None),
             Value::Number(0.into()),
         );
     }

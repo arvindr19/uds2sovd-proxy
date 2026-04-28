@@ -150,7 +150,7 @@ impl ServiceResolver {
     /// state-chart and pins the engine to a determinate base state.
     ///
     /// #`TODO:` real variant detection
-    ///
+    /// <https://github.com/eclipse-opensovd/uds2sovd-proxy/issues/16>
     /// Replace the dummy response with actual variant-identification DID
     /// reads from a live ECU connection:
     ///   1. Read variant-identification DIDs from the ECU.

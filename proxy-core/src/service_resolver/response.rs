@@ -45,7 +45,7 @@ impl ServiceResolver {
     /// # Errors
     /// Returns an error if the response cannot be encoded.
     ///
-    /// # TODO:
+    /// # TODO : <https://github.com/eclipse-opensovd/uds2sovd-proxy/issues/17>
     /// Once the SOVD server returns properly structured responses, the naive
     /// encoding fallback and the MDD-based `encode_response_from_metadata`
     /// path can be removed — the proxy will forward pre-encoded UDS bytes.
@@ -75,6 +75,8 @@ impl ServiceResolver {
                 service_name
             );
             let response_sid = sid.wrapping_add(UDS_ID_RESPONSE_BITMASK);
+            // `did` is `u16`; `did >> 8` ≤ 0xFF and `did & 0xFF` ≤ 0xFF — both
+            // narrowing casts to `u8` are always safe.
             #[allow(clippy::cast_possible_truncation)]
             let mut response = vec![response_sid, (did >> 8) as u8, (did & 0xFF) as u8];
 
@@ -93,6 +95,7 @@ impl ServiceResolver {
                             response.extend(encode_unsigned_be(num));
                         } else if let Some(num) = n.as_i64() {
                             let unsigned = num.cast_unsigned();
+                            // `try_from` check above proves `unsigned` fits in `u8`.
                             #[allow(clippy::cast_possible_truncation)]
                             if u8::try_from(unsigned).is_ok() {
                                 response.push(unsigned as u8);
@@ -104,6 +107,8 @@ impl ServiceResolver {
                     }
                     serde_json::Value::Array(arr) => {
                         for item in arr {
+                            // Array elements in a JSON byte-array response are UDS byte
+                            // values (0–255).  Truncation to `u8` is intentional.
                             #[allow(clippy::cast_possible_truncation)]
                             if let Some(byte) = item.as_u64() {
                                 response.push(byte as u8);

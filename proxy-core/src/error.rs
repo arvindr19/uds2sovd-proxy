@@ -68,7 +68,7 @@ pub enum UdsError {
 /// SOVD gateway communication errors.
 #[derive(Error, Debug)]
 pub enum SovdError {
-    #[error("HTTP request failed: {0}")]
+    #[error("HTTP error: {0}")]
     Http(String),
 
     #[error("Authentication failed: {0}")]
@@ -268,6 +268,12 @@ mod tests {
         };
         assert!(err.to_string().contains('3'));
         assert!(err.to_string().contains('1'));
+
+        let err = UdsError::NegativeResponse {
+            nrc: 0x31,
+            description: "Request out of range".into(),
+        };
+        assert!(err.to_string().contains("0x31"));
     }
 
     #[test]

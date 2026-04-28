@@ -84,19 +84,19 @@ impl ServiceResolver {
     ) -> Result<Vec<String>, DiagServiceError> {
         let manager = self.manager.read().await;
         let security_plugin: DynamicPlugin = Box::new(());
-        let names = if sid == service_ids::READ_DATA_BY_IDENTIFIER {
-            manager
+        let names = match sid {
+            service_ids::READ_DATA_BY_IDENTIFIER => manager
                 .get_components_data_info(&security_plugin)
                 .into_iter()
                 .map(|c| c.id)
-                .collect()
-        } else if sid == service_ids::WRITE_DATA_BY_IDENTIFIER {
-            manager
+                .collect(),
+            service_ids::WRITE_DATA_BY_IDENTIFIER => manager
                 .get_components_configurations_info(&security_plugin)
-                .map(|v| v.into_iter().map(|c| c.id).collect())
                 .unwrap_or_default()
-        } else {
-            Vec::new()
+                .into_iter()
+                .map(|c| c.id)
+                .collect(),
+            _ => Vec::new(),
         };
         Ok(names)
     }

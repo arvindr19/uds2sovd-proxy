@@ -86,7 +86,7 @@ DoIP Client (port 13400)
     ↓ UDS request (0x22 DID)
 Proxy (service resolution via MDD)
     ↓ SOVD REST (GET /data/vindataidentifier_read)
-Mock Gateway OR Real CDA
+Mock Gateway OR Real SOVD Server
     ↓ SOVD JSON response
 Proxy (MDD-based UDS encoding)
     ↓ UDS response (0x62 DID data)

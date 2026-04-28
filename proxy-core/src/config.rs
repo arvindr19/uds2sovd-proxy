@@ -10,7 +10,10 @@
  * https://www.apache.org/licenses/LICENSE-2.0
  */
 
-use std::path::Path;
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    path::Path,
+};
 
 use serde::{Deserialize, Deserializer, de};
 
@@ -18,40 +21,6 @@ use crate::error::{ProxyError, Result};
 
 /// Required byte length for EID and GID fields per ISO 13400-2.
 const EID_GID_BYTE_LENGTH: usize = 6;
-
-/// Reject zero during deserialization so invalid values never enter the config.
-fn deserialize_nonzero_u16<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<u16, D::Error> {
-    let v = u16::deserialize(deserializer)?;
-    if v == 0 {
-        return Err(de::Error::custom("value must not be zero"));
-    }
-    Ok(v)
-}
-
-/// Reject zero during deserialization for `usize` fields.
-fn deserialize_positive_usize<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<usize, D::Error> {
-    let v = usize::deserialize(deserializer)?;
-    if v == 0 {
-        return Err(de::Error::custom("value must be greater than zero"));
-    }
-    Ok(v)
-}
-
-/// Reject empty strings during deserialization.
-fn deserialize_nonempty_str<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<String, D::Error> {
-    let s = String::deserialize(deserializer)?;
-    if s.is_empty() {
-        return Err(de::Error::custom("value must not be empty"));
-    }
-    Ok(s)
-}
-
 /// Top-level proxy configuration loaded from a TOML file.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Config {
@@ -72,19 +41,61 @@ pub struct ServerConfig {
     #[serde(deserialize_with = "deserialize_nonzero_u16")]
     pub doip_port: u16,
     /// IP address to bind the server socket to.
-    pub bind_address: String,
+    #[serde(deserialize_with = "deserialize_ip_addr")]
+    pub bind_address: IpAddr,
     /// Maximum number of concurrent connections.
-    #[serde(deserialize_with = "deserialize_positive_usize")]
+    #[serde(deserialize_with = "deserialize_max_connections")]
     pub max_connections: usize,
     /// `DoIP` source address used in response messages.
+    #[serde(deserialize_with = "deserialize_nonzero_u16")]
     pub source_address: u16,
 }
 
+fn deserialize_nonzero_u16<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<u16, D::Error> {
+    let v = u16::deserialize(deserializer)?;
+    if v == 0 {
+        return Err(de::Error::custom("value must not be zero"));
+    }
+    Ok(v)
+}
+
+/// Deserialize IP address string into `std::net::IpAddr`.
+fn deserialize_ip_addr<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<IpAddr, D::Error> {
+    let s = String::deserialize(deserializer)?;
+    s.parse::<IpAddr>()
+        .map_err(|_| de::Error::custom(format!("invalid IP address: {s}")))
+}
+
+/// Reject zero during deserialization for `usize` fields.
+fn deserialize_max_connections<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<usize, D::Error> {
+    let v = usize::deserialize(deserializer)?;
+    if v == 0 {
+        return Err(de::Error::custom("value must be greater than zero"));
+    }
+    Ok(v)
+}
+
+/// Reject empty gateway URL strings during deserialization.
+fn deserialize_nonempty_gateway_url<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    let s = String::deserialize(deserializer)?;
+    if s.is_empty() {
+        return Err(de::Error::custom("gateway_url must not be empty"));
+    }
+    Ok(s)
+}
 /// SOVD gateway connection configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SovdConfig {
     /// Base URL of the SOVD gateway (e.g. `http://localhost:20002`).
-    #[serde(deserialize_with = "deserialize_nonempty_str")]
+    #[serde(deserialize_with = "deserialize_nonempty_gateway_url")]
     pub gateway_url: String,
     /// `OAuth2` client ID for gateway authentication.
     pub client_id: String,
@@ -149,7 +160,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             doip_port: 13400,
-            bind_address: "0.0.0.0".to_string(),
+            bind_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             max_connections: 10,
             source_address: 0x0E80,
         }

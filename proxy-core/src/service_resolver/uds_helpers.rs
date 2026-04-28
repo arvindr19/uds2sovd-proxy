@@ -108,21 +108,18 @@ pub(super) fn encode_unsigned_be(num: u64) -> Vec<u8> {
 #[must_use]
 pub fn parse_mux_coded_value(coded_value: &str) -> Option<u64> {
     let trimmed = coded_value.trim();
-    if let Ok(v) = trimmed.parse::<u64>() {
-        return Some(v);
-    }
+    // Try integer parsing first; fall back to float (MDD may store values like "61699.0").
+    // The bounds check (`>= 0.0` and `<= u64::MAX as f64`) ensures the value fits before
+    // the narrowing cast.  DIDs are 16-bit so precision loss from f64 never occurs in practice.
     #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss
+        clippy::cast_precision_loss,   // u64::MAX as f64 is safe for the upper-bound comparison
+        clippy::cast_possible_truncation, // guarded by the bounds check above
+        clippy::cast_sign_loss         // guarded by the `>= 0.0` check above
     )]
-    if let Ok(v) = trimmed.parse::<f64>()
-        && v >= 0.0
-        && v <= u64::MAX as f64
-    {
-        return Some(v as u64);
-    }
-    None
+    trimmed.parse::<u64>().ok().or_else(|| {
+        let v = trimmed.parse::<f64>().ok()?;
+        (v >= 0.0 && v <= u64::MAX as f64).then_some(v as u64)
+    })
 }
 
 /// Find the MUX case prefix that covers a given DID in response metadata.
@@ -260,19 +257,14 @@ pub(super) fn encode_value_at(
     size: usize,
     value: Option<&serde_json::Value>,
 ) {
-    if size == 0 {
-        return;
-    }
-    let Some(end) = pos.checked_add(size) else {
-        return;
-    };
-    if end > buf.len() {
-        return;
-    }
-    let Some(value) = value else {
-        // No value provided — leave as zero (already initialised).
+    let (Some(value), Some(end)) = (
+        value,
+        pos.checked_add(size)
+            .filter(|&e| size > 0 && e <= buf.len()),
+    ) else {
         return;
     };
+
     match value {
         serde_json::Value::Number(n) => {
             let raw = n

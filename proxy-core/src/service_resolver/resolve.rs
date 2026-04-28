@@ -135,6 +135,8 @@ impl ServiceResolver {
     /// * `did` - 16-bit Data Identifier to resolve.
     /// * `uds_bytes` - Raw incoming UDS request bytes.
     /// * `label` - Log prefix string (e.g. `"READ"`, `"WRITE"`).
+    // `did` is `u16`; `did >> 8` is at most 0xFF and `did & 0xFF` is at most 0xFF,
+    // so both narrowing casts to `u8` are safe and can never truncate.
     #[allow(clippy::cast_possible_truncation)]
     async fn resolve_service_did(
         &self,
@@ -212,19 +214,19 @@ impl ServiceResolver {
         }
 
         let security_plugin: DynamicPlugin = Box::new(());
-        let extra_names: Vec<String> = if sid == service_ids::READ_DATA_BY_IDENTIFIER {
-            manager
+        let extra_names: Vec<String> = match sid {
+            service_ids::READ_DATA_BY_IDENTIFIER => manager
                 .get_components_data_info(&security_plugin)
                 .into_iter()
                 .map(|c| c.id)
-                .collect()
-        } else if sid == service_ids::WRITE_DATA_BY_IDENTIFIER {
-            manager
+                .collect(),
+            service_ids::WRITE_DATA_BY_IDENTIFIER => manager
                 .get_components_configurations_info(&security_plugin)
-                .map(|v| v.into_iter().map(|c| c.id).collect())
                 .unwrap_or_default()
-        } else {
-            Vec::new()
+                .into_iter()
+                .map(|c| c.id)
+                .collect(),
+            _ => Vec::new(),
         };
         for name in extra_names {
             if !candidates.contains(&name) {
@@ -254,7 +256,6 @@ impl ServiceResolver {
     }
 
     /// Step 3: check if `candidate_name` matches `did` via request parameter metadata.
-    #[allow(clippy::cast_possible_truncation)]
     async fn match_candidate_did(
         &self,
         manager: &CdaEcuManager<DefaultSecurityPluginData>,
@@ -274,6 +275,8 @@ impl ServiceResolver {
             }
 
             Some(cda_interfaces::ParameterTypeMetadata::PhysConst { coded_value, .. }) => {
+                // `coded_value` is `f64` in the CDA schema; DIDs are bounded to
+                // u16 (0x0000–0xFFFF per ISO 14229), so the narrowing cast is safe.
                 #[allow(clippy::cast_possible_truncation)]
                 let resolved = match coded_value {
                     Some(cv) => Some(*cv as u16),
@@ -287,6 +290,8 @@ impl ServiceResolver {
                 compu_scales,
                 ..
             }) => {
+                // `coded_default_value` is `f64` in the CDA schema; DIDs are bounded
+                // to u16 (0x0000–0xFFFF per ISO 14229), so the narrowing cast is safe.
                 #[allow(clippy::cast_possible_truncation)]
                 let default_ok = coded_default_value
                     .map(|cd| cd as u16 == did)

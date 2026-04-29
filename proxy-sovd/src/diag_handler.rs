@@ -12,18 +12,13 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use proxy_core::{Config, ProxyError, ResolvedService, Result, ServiceResolver, error::UdsError};
-use tracing::{info, warn};
+use proxy_core::{
+    Config, ProxyError, ResolvedService, Result, ServiceResolver, error::UdsError,
+};
 
 use crate::mapper::SovdMapper;
 
 /// SOVD-backed diagnostic handler.
-///
-/// Combines MDD-based service resolution ([`ServiceResolver`]) with SOVD
-/// gateway communication ([`SovdMapper`]) to process UDS diagnostic requests.
-///
-/// Constructed in `proxy-main` and injected into the `DoIP` server as
-/// `Arc<SovdDiagHandler>`.
 pub struct SovdDiagHandler {
     /// Shared proxy configuration.
     config: Arc<Config>,
@@ -84,7 +79,7 @@ impl SovdDiagHandler {
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;
 
-        info!("[MDD] READ service found: '{}'", service_name);
+        tracing::info!("[MDD] READ service found: '{}'", service_name);
 
         self.mapper
             .process_read_data_request(did, uds_request, mgr, &service_name, Some(parsed_data))
@@ -114,7 +109,7 @@ impl SovdDiagHandler {
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;
 
-        info!("[MDD] WRITE service found: '{}'", service_name);
+        tracing::info!("[MDD] WRITE service found: '{}'", service_name);
 
         self.mapper
             .process_write_data_request(did, uds_request, &service_name, parsed_data)

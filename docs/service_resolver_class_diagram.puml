@@ -19,60 +19,98 @@ skinparam classFontSize 12
 
 ' ─────────────────────────────────────────────────────────────────
 ' proxy-core::service_resolver
-' One struct (ServiceResolver) whose impl blocks are split across
-' four source files for readability.  uds_helpers is a separate
-' module of free (non-method) functions.
+' Facade (ServiceResolver) owns CdaEcuManager and ecu_name, exposes
+' sub-component accessors.  Each sub-component is a focused struct:
+'   DidResolver      (resolve.rs)   -- DID-to-service resolution
+'   ResponseEncoder  (response.rs)  -- UDS response encoding
+'   MetadataProvider (metadata.rs)  -- MDD parameter queries
+' uds_helpers.rs holds free functions and the UdsResponse type.
 ' ─────────────────────────────────────────────────────────────────
 package "proxy-core::service_resolver" {
 
-    class ServiceResolver {
-        - manager : Arc<RwLock<CdaEcuManager>>
+    class ServiceResolver <<facade>> {
+        - manager : CdaEcuManager
         - ecu_name : String
-        == mod.rs — construction & UDS helpers ==
-        + {static} new(ecu_name, db, logical, tester) : Result<Self>
+        == mod.rs -- construction & accessors ==
+        + {static} <<async>> new(ecu_name, db, logical, tester) : Result<Self>
+        - {static} <<async>> activate_base_variant(manager) : Result<()>
+        - {static} default_com_params(logical, tester: u16) : ComParams
         + ecu_name() : &str
-        + {static} is_negative_response(uds) : bool
-        + {static} get_nrc(uds) : Option<u8>
-        == resolve.rs — DID --> service name ==
-        + <<async>> resolve_read_service(did, uds) : Option<ResolvedService>
-        + <<async>> resolve_write_service(did, uds) : Option<ResolvedService>
-        == response.rs — encode UDS response ==
-        + <<async>> build_response(name, sid, did, data) : Result<Vec<u8>>
-        == metadata.rs — MDD parameter queries ==
-        + <<async>> get_service_parameter_metadata(name) : Result<Vec<Param>>
-        + <<async>> get_response_parameter_metadata(name) : Result<Vec<RespParam>>
-        + <<async>> get_enriched_response_metadata(name, did) : Result<Vec<RespParam>>
-        + <<async>> lookup_service_names_by_sid(sid) : Result<Vec<String>>
-        + <<async>> get_mux_cases_for_service(name) : Result<Vec<MuxCase>>
+        + did_resolver() : DidResolver
+        + response_encoder() : ResponseEncoder
+        + metadata() : MetadataProvider
     }
 
-    note right of ServiceResolver
+    together {
+        class DidResolver {
+            - manager : CdaEcuManager
+            == resolve.rs -- DID --> service name ==
+            + <<async>> resolve_read_service(did, uds) : Option<ResolvedService>
+            + <<async>> resolve_write_service(did, uds) : Option<ResolvedService>
+            - <<async>> resolve_service(sid, did, uds, label) : Option<ResolvedService>
+            - <<async>> resolve_service_did(sid, did, ...) : Option<String>
+            - {static} build_did_candidates(manager, prefix, sid, did) : Option<Vec<String>>
+            - <<async>> match_candidate_did(manager, name, sid, did) : bool
+            - {static} <<async>> probe_service_did(manager, name, sid, meta) : Option<u16>
+        }
 
-        <b>Service resolution algorithm (resolve.rs):</b>
+        class ResponseEncoder {
+            - manager : CdaEcuManager
+            - metadata : MetadataProvider
+            == response.rs -- encode UDS response ==
+            + <<async>> build_response(name, sid, did, data) : Result<Vec<u8>>
+            - <<async>> encode_response_from_metadata(name, sid, did, data) : Option<(Vec<u8>, String)>
+            - <<async>> validate_response(name, sid, bytes) : ()
+        }
+
+        class MetadataProvider {
+            - manager : CdaEcuManager
+            == metadata.rs -- MDD parameter queries ==
+            + <<async>> get_service_parameter_metadata(name) : Result<Vec<Param>>
+            + <<async>> get_response_parameter_metadata(name) : Result<Vec<RespParam>>
+            + <<async>> get_enriched_response_metadata(name, did) : Result<Vec<RespParam>>
+            + <<async>> get_enriched_response_metadata_with_source(name, did) : Result<(Vec<RespParam>, String)>
+            + <<async>> lookup_service_names_by_sid(sid) : Result<Vec<String>>
+            + <<async>> get_mux_cases_for_service(name) : Result<Vec<MuxCase>>
+        }
+    }
+
+    note right of DidResolver
+
+        <b>Resolution algorithm:</b>
         1. lookup_diagcomms_by_request_prefix([SID,DID_HI,DID_LO])
         2. Single match  -->  service name found (fast path)
         3. Multiple candidates  -->  inspect request parameter metadata:
-           • CodedConst   — exact DID value match
-           • PhysConst    — coded_value or create_uds_payload probe
-           • Value        — coded_default or CompuScale range match
+           * CodedConst   -- exact DID value match
+           * PhysConst    -- coded_value or create_uds_payload probe
+           * Value        -- coded_default or CompuScale range match
         4. No match  -->  log error, return None (no fallback)
+    end note
 
-        <b>Response encoding (response.rs):</b>
+    note right of ResponseEncoder
+        <b>Response encoding:</b>
         Walk MDD POS-RESPONSE parameters:
-        • CODED-CONST        --> fixed byte (e.g. response SID 0x62)
-        • MatchingRequestParam --> echo DID bytes from request
-        • VALUE              --> SOVD JSON value at MDD-defined offset
-        Opaque STRUCTURE types trigger MUX sibling lookup.
+        * CODED-CONST        --> fixed byte (e.g. response SID 0x62)
+        * MatchingRequestParam --> echo DID bytes from request
+        * VALUE              --> SOVD JSON value at MDD-defined offset
+        Opaque STRUCTURE types trigger MUX sibling lookup
+        via MetadataProvider.get_enriched_response_metadata_with_source().
     end note
 
     class uds_helpers <<module: free functions>> {
-        ' ── pub re-exports (used by proxy-sovd) ──
+        ' -- pub re-exports (used by proxy-sovd) --
         + parse_mux_coded_value(coded) : Option<u64>
         + find_mux_case_prefix(meta, did) : Option<String>
         + has_mux_case_for_did_exact(meta, did) : bool
+        == UdsResponse ==
+        + UdsResponse::new(bytes) : UdsResponse
+        + UdsResponse::sid() : Option<u8>
+        + UdsResponse::is_negative() : bool
+        + UdsResponse::nrc() : Option<u8>
         == internal helpers ==
         ~ extract_did_from_uds(data) : Option<u16>
         ~ diag_comm_type(sid) : DiagCommType
+        ~ make_diag_comm(name, sid) : DiagComm
         ~ make_service_payload(data) : ServicePayload
         ~ encode_unsigned_be(num) : Vec<u8>
         ~ parse_u64_literal(value) : Option<u64>
@@ -83,11 +121,22 @@ package "proxy-core::service_resolver" {
     }
 
     note bottom of uds_helpers
-        Top 3 are pub re-exported from mod.rs
-        and used by proxy-sovd for MUX matching.
+        Top 3 + UdsResponse are pub re-exported
+        from mod.rs and used by proxy-sovd.
     end note
 
-    ServiceResolver ..> uds_helpers : uses
+    class ResolvedService <<struct>> {
+        + name : String
+        + params : Map
+    }
+
+    ServiceResolver --> DidResolver : did_resolver()
+    ServiceResolver --> ResponseEncoder : response_encoder()
+    ServiceResolver --> MetadataProvider : metadata()
+    ResponseEncoder o--> MetadataProvider : holds (explicit dependency)
+    DidResolver ..> uds_helpers : uses
+    ResponseEncoder ..> uds_helpers : uses
+    DidResolver ..> ResolvedService : returns
 }
 
 ' ─────────────────────────────────────────────────────────────────
@@ -101,13 +150,15 @@ package "cda-core  <size:10>(external path dep)</size>" #LightGray {
         + get_request_parameter_metadata(service)
         ' — response building —
         + get_response_parameter_metadata(service)
-        + get_components_data_info(service)
+        + get_components_data_info(plugin)
+        + get_components_configurations_info(plugin)
+        + get_mux_cases_for_service(service)
         ' — encoding / decoding —
-        + create_uds_payload(service, params)
-        + convert_from_uds(service, bytes)
-        + convert_request_from_uds(service, bytes)
+        + create_uds_payload(service, plugin, params)
+        + convert_from_uds(service, payload, true)
+        + convert_request_from_uds(service, payload, true)
         ' — variant selection —
-        + detect_variant()
+        + detect_variant(responses)
     }
 
     class "CdaEcuManager\n<size:10><DefaultSecurityPluginData></size>" as CdaEcuManager {
@@ -120,7 +171,6 @@ package "cda-core  <size:10>(external path dep)</size>" #LightGray {
 
 ' ─────────────────────────────────────────────────────────────────
 ' proxy-core public API consumed by proxy-sovd / proxy-doip
-' DiagHandler trait removed — no abstraction needed with one impl.
 ' ─────────────────────────────────────────────────────────────────
 package "proxy-core  <size:10>(public API)</size>" #LightYellow {
 
@@ -132,11 +182,6 @@ package "proxy-core  <size:10>(public API)</size>" #LightYellow {
         --
         + {static} from_file(path) : Result<Self>
     }
-
-    class ResolvedService <<struct>> {
-        + name : String
-        + params : Map
-    }
 }
 
 ' ─────────────────────────────────────────────────────────────────
@@ -145,8 +190,9 @@ package "proxy-core  <size:10>(public API)</size>" #LightYellow {
 ServiceResolver *--> CdaEcuManager : owns via Arc<RwLock>\n(shared with callers)
 
 note on link
-    Async RwLock allows concurrent
-    read access across Tokio tasks.
+    CdaEcuManager = Arc<RwLock<EcuManager<DefaultSecurityPluginData>>>.
+    Each sub-component receives an Arc::clone
+    to allow concurrent async read access.
 end note
 
 @enduml

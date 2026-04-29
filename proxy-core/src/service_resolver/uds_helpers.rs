@@ -10,11 +10,11 @@
  * https://www.apache.org/licenses/LICENSE-2.0
  */
 
-//! UDS helper functions, types for encoding, decoding, and service metadata queries.
+//! UDS helper functions and types.
 //!
-//! Pure functions and types used across the [`super::ServiceResolver`] implementation:
-//! DID extraction, MUX-case matching, value encoding, payload construction, and
-//! structured access to UDS response bytes.
+//! Pure functions used across the `service_resolver` module: DID extraction,
+//! MUX-case matching, value encoding, payload construction, and
+//! [`UdsResponse`] for structured access to UDS response bytes.
 
 use cda_interfaces::{
     CompuScaleInfo, DiagComm, DiagCommType, ResponseParameterInfo, ServiceParameterMetadata,
@@ -24,9 +24,6 @@ use cda_interfaces::{
 use super::UDS_NEGATIVE_RESPONSE_MIN_LEN;
 
 /// Typed accessor for raw UDS response bytes.
-///
-/// Wraps a byte slice and exposes structured accessors for UDS response fields,
-/// hiding direct index arithmetic from callers.
 pub struct UdsResponse<'a>(&'a [u8]);
 
 impl<'a> UdsResponse<'a> {
@@ -42,7 +39,7 @@ impl<'a> UdsResponse<'a> {
         self.0.first().copied()
     }
 
-    /// Returns `true` if this is a negative response (SID `0x7F`).
+    /// Returns `true` if this is a negative response (`0x7F` + SID + NRC).
     #[must_use]
     pub fn is_negative(&self) -> bool {
         self.0.len() >= UDS_NEGATIVE_RESPONSE_MIN_LEN
@@ -67,7 +64,7 @@ pub(super) fn extract_did_from_uds(data: &[u8]) -> Option<u16> {
     Some(u16::from_be_bytes([b1, b2]))
 }
 
-/// Map a UDS service identifier to its [`DiagCommType`].
+/// Map a UDS SID to its [`DiagCommType`].
 ///
 /// Falls back to [`DiagCommType::Data`] for unrecognised SIDs so that the
 /// caller always receives a usable type rather than an error.
@@ -86,14 +83,13 @@ pub(super) fn make_service_payload(data: &[u8]) -> ServicePayload {
     }
 }
 
-/// Encode an unsigned integer as big-endian bytes using the minimum width needed.
+/// Encode an unsigned integer as big-endian bytes (minimum width).
 ///
-/// Always produces at least one byte; zero encodes as `[0x00]`.
+/// Zero encodes as `[0x00]`.
 pub(super) fn encode_unsigned_be(num: u64) -> Vec<u8> {
     if num == 0 {
         return vec![0x00];
     }
-    // Skip leading zero bytes; safe because num != 0 guarantees a non-empty result.
     num.to_be_bytes()
         .iter()
         .copied()

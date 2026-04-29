@@ -10,24 +10,12 @@
  * https://www.apache.org/licenses/LICENSE-2.0
  */
 
-//! DID-to-service resolution logic.
+//! DID-to-service resolution.
 //!
 //! Resolves incoming UDS DID values to the correct MDD service name
 //! using prefix lookup, request parameter metadata, and encoding probes.
-//!
-//! # Exported Methods (via `ServiceResolver`)
-//! - [`ServiceResolver::resolve_read_service`]: Resolve READ service for DID
-//! - [`ServiceResolver::resolve_write_service`]: Resolve WRITE service for DID
-//!
-//! # Algorithm Overview
-//! 1. `Prefix lookup` via `[SID, DID_HI, DID_LO]` against MDD coded-const services
-//! 2. `Fast path`: Single prefix match -> return immediately
-//! 3. `Candidate enumeration`: SID-matching services + component data/config
-//! 4. `Metadata matching`: `CodedConst` (exact), `PhysConst` (`coded_value` or probe),
-//!    `Value` (range/list via `CompuScale`)
-//! 5. `Parse validation`: Attempt CDA `convert_request_from_uds` to extract params
 
-use cda_core::EcuManager as CdaEcuManager;
+use cda_core::EcuManager as InnerManager;
 use cda_interfaces::{
     DynamicPlugin, EcuManager as EcuManagerTrait, HashMap, ServiceParameterMetadata,
     diagservices::{DiagServiceResponse, UdsPayloadData},
@@ -36,15 +24,37 @@ use cda_interfaces::{
 use cda_plugin_security::DefaultSecurityPluginData;
 
 use super::{
-    ResolvedService, ServiceResolver,
+    CdaEcuManager,
     uds_helpers::{
         did_matches_compu_scales, extract_did_from_uds, find_did_param, make_diag_comm,
         make_service_payload, parse_u64_literal,
     },
 };
 
-impl ServiceResolver {
-    /// Resolve the best-matching READ service for UDS request bytes.
+/// Successful result of DID-to-service resolution.
+pub struct ResolvedService {
+    /// Matched MDD service name (e.g. `"RDBI_VIN"`).
+    pub name: String,
+    /// Decoded request parameters, or an empty map when the CDA parser
+    /// is unavailable for the matched service.
+    pub params: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Resolves UDS DID values to MDD service names.
+///
+/// Obtain an instance via
+/// [`ServiceResolver::did_resolver()`](super::ServiceResolver::did_resolver).
+#[derive(Clone)]
+pub struct DidResolver {
+    manager: CdaEcuManager,
+}
+
+impl DidResolver {
+    pub(super) fn new(manager: CdaEcuManager) -> Self {
+        Self { manager }
+    }
+
+    /// Resolve the best-matching READ service for the given DID and raw UDS bytes.
     pub async fn resolve_read_service(
         &self,
         did: u16,
@@ -54,7 +64,7 @@ impl ServiceResolver {
             .await
     }
 
-    /// Resolve the best-matching WRITE service for UDS request bytes.
+    /// Resolve the best-matching WRITE service for the given DID and raw UDS bytes.
     pub async fn resolve_write_service(
         &self,
         did: u16,
@@ -69,72 +79,62 @@ impl ServiceResolver {
         .await
     }
 
-    /// Probe a service DID via request encoding for symbolic PHYS-CONST cases.
-    async fn probe_service_did(
-        manager: &CdaEcuManager<DefaultSecurityPluginData>,
-        service_name: &str,
+    /// Find the correct service for a given SID + DID.
+    ///
+    /// Delegates DID matching to `resolve_service_did`, then attempts
+    /// parse-validation via `convert_request_from_uds`.
+    async fn resolve_service(
+        &self,
         sid: u8,
-        params: &[ServiceParameterMetadata],
-    ) -> Option<u16> {
-        let mut param_map: HashMap<String, serde_json::Value> = HashMap::default();
-        for param in params {
-            match &param.param_type {
-                cda_interfaces::ParameterTypeMetadata::CodedConst { coded_value } => {
-                    // `?` is intentional: if any CodedConst can't be parsed we cannot
-                    // build a valid probe request, so abort the entire probe.
-                    let parsed = parse_u64_literal(coded_value)?;
-                    param_map.insert(param.name.clone(), serde_json::json!(parsed));
-                }
-                cda_interfaces::ParameterTypeMetadata::PhysConst {
-                    phys_constant_value,
-                    ..
-                } => {
-                    param_map.insert(param.name.clone(), serde_json::json!(phys_constant_value));
-                }
-                cda_interfaces::ParameterTypeMetadata::Value { .. } => {
-                    // Use string probe value for VALUE params to satisfy DOPs that
-                    // parse textual values (TEXTTABLE / string-typed fields).
-                    param_map.insert(param.name.clone(), serde_json::json!("0"));
-                }
-                cda_interfaces::ParameterTypeMetadata::MatchingRequestParam { .. } => {}
-            }
-        }
+        did: u16,
+        uds_bytes: &[u8],
+        label: &str,
+    ) -> Option<ResolvedService> {
+        tracing::debug!("[MDD] {} DID 0x{:04X}", label, did);
 
-        let diag_comm = make_diag_comm(service_name, sid);
-        let security_plugin: DynamicPlugin = Box::new(());
+        let service_name = self.resolve_service_did(sid, did, uds_bytes, label).await?;
 
-        let payload = manager
-            .create_uds_payload(
-                &diag_comm,
-                &security_plugin,
-                Some(UdsPayloadData::ParameterMap(param_map)),
-            )
+        // Attempt parse-validation to extract structured parameter data.
+        let manager = self.manager.read().await;
+        let payload = make_service_payload(uds_bytes);
+        let diag_comm = make_diag_comm(&service_name, sid);
+
+        if let Ok(parsed) = manager
+            .convert_request_from_uds(&diag_comm, &payload, true)
             .await
-            .ok()?;
-
-        let probed_did = extract_did_from_uds(&payload.data)?;
-        // ISO 14229-1 §7.3.2: DID 0x0000 is reserved.  A zero result means the
-        // Payload encoding produced a degenerate output (e.g. a TEXTTABLE
-        // lookup silently failed), so treat it as unresolvable rather than a match.
-        if probed_did == 0 {
-            None
-        } else {
-            Some(probed_did)
+            && let Ok(json_resp) = parsed.into_json()
+            && let serde_json::Value::Object(map) = json_resp.data
+        {
+            tracing::debug!(
+                "[MDD] {} DID 0x{:04X} -> '{}' (parse verified)",
+                label,
+                did,
+                service_name
+            );
+            return Some(ResolvedService {
+                name: service_name,
+                params: map,
+            });
         }
+
+        // Parse failed -- still return the metadata-resolved service with empty map.
+        tracing::debug!(
+            "[MDD] {} DID 0x{:04X} -> '{}' (metadata match, parse unavailable)",
+            label,
+            did,
+            service_name
+        );
+        Some(ResolvedService {
+            name: service_name,
+            params: serde_json::Map::new(),
+        })
     }
 
     /// Resolve a DID to a service name using prefix lookup and metadata.
     ///
-    /// Uses `lookup_diagcomms_by_request_prefix` with the full `[SID, DID_HI,
-    /// DID_LO]` prefix for direct matching of CODED-CONST DID services.  For
-    /// `PhysConst` / Value DID services (where only the SID is a coded constant),
-    /// confirms the match via request parameter metadata.
-    ///
-    /// # Parameters
-    /// * `sid` - UDS service identifier (e.g. 0x22 for RDBI, 0x2E for WDBI).
-    /// * `did` - 16-bit Data Identifier to resolve.
-    /// * `uds_bytes` - Raw incoming UDS request bytes.
-    /// * `label` - Log prefix string (e.g. `"READ"`, `"WRITE"`).
+    /// Step 1: prefix lookup with `[SID, DID_HI, DID_LO]`.
+    /// Step 2: build candidate list.
+    /// Step 3: match each candidate via request parameter metadata.
     // `did` is `u16`; `did >> 8` is at most 0xFF and `did & 0xFF` is at most 0xFF,
     // so both narrowing casts to `u8` are safe and can never truncate.
     #[allow(clippy::cast_possible_truncation)]
@@ -168,29 +168,25 @@ impl ServiceResolver {
         None
     }
 
-    /// Step 1 + 2: prefix lookup, fast-path, and candidate list.
+    /// Build the candidate list from prefix lookup and supplementary sources.
     ///
-    /// Returns `None` (after logging) when no candidates exist.
-    /// Returns `Some` with a single name already when the fast path fires
-    /// (only one prefix match — skip Step 3 entirely).
+    /// Returns `Some` with a single-element vec on a unique prefix match
+    /// (fast path). Returns `None` when no candidates exist.
     fn build_did_candidates(
-        manager: &CdaEcuManager<DefaultSecurityPluginData>,
+        manager: &InnerManager<DefaultSecurityPluginData>,
         did_prefix: [u8; 3],
         sid: u8,
         did: u16,
         label: &str,
     ) -> Option<Vec<String>> {
-        // Step 1: Prefix lookup with [SID, DID_HI, DID_LO].
-        //
-        // The CDA matches sequential coded-const parameters against the prefix:
-        // - CODED-CONST DID services -> only exact DID matches pass.
-        // - PhysConst / Value DID services -> only the SID byte is coded-const,
-        //   so all services with matching SID pass through.
+        // Prefix lookup with [SID, DID_HI, DID_LO].
+        // CODED-CONST DID services only pass on exact DID match;
+        // PhysConst/Value services pass when the SID byte matches.
         let prefix_matches = manager
             .lookup_diagcomms_by_request_prefix(&did_prefix)
             .unwrap_or_default();
 
-        // Fast path: single match from prefix lookup (common case: unique DID).
+        // Single prefix match (common case: unique DID) -- skip metadata check.
         if let [only] = prefix_matches.as_slice() {
             let name = only.lookup_name.as_deref().unwrap_or(&only.name);
             tracing::info!(
@@ -202,8 +198,8 @@ impl ServiceResolver {
             return Some(vec![name.to_owned()]);
         }
 
-        // Step 2: Build deduplicated candidate list from prefix matches +
-        // supplementary sources (bypass NOT-INHERITED-DIAG-COMMS filter).
+        // Build deduplicated candidate list from prefix matches and
+        // supplementary sources (bypasses NOT-INHERITED-DIAG-COMMS filter).
         let mut candidates: Vec<String> = Vec::new();
 
         for dc in &prefix_matches {
@@ -255,10 +251,10 @@ impl ServiceResolver {
         Some(candidates)
     }
 
-    /// Step 3: check if `candidate_name` matches `did` via request parameter metadata.
+    /// Check whether `candidate_name` matches `did` via request parameter metadata.
     async fn match_candidate_did(
         &self,
-        manager: &CdaEcuManager<DefaultSecurityPluginData>,
+        manager: &InnerManager<DefaultSecurityPluginData>,
         candidate_name: &str,
         sid: u8,
         did: u16,
@@ -275,8 +271,7 @@ impl ServiceResolver {
             }
 
             Some(cda_interfaces::ParameterTypeMetadata::PhysConst { coded_value, .. }) => {
-                // `coded_value` is `f64` in the CDA schema; DIDs are bounded to
-                // u16 (0x0000–0xFFFF per ISO 14229), so the narrowing cast is safe.
+                // f64 -> u16 narrowing is safe for DID range (0x0000-0xFFFF).
                 #[allow(clippy::cast_possible_truncation)]
                 let resolved = match coded_value {
                     Some(cv) => Some(*cv as u16),
@@ -290,8 +285,7 @@ impl ServiceResolver {
                 compu_scales,
                 ..
             }) => {
-                // `coded_default_value` is `f64` in the CDA schema; DIDs are bounded
-                // to u16 (0x0000–0xFFFF per ISO 14229), so the narrowing cast is safe.
+                // f64 -> u16 narrowing is safe for DID range.
                 #[allow(clippy::cast_possible_truncation)]
                 let default_ok = coded_default_value
                     .map(|cd| cd as u16 == did)
@@ -307,56 +301,56 @@ impl ServiceResolver {
         }
     }
 
-    /// Find the correct service for a given SID + DID.
-    ///
-    /// Delegates DID -> service resolution to [`resolve_service_did`] which uses
-    /// MDD metadata and probing (`CodedConst`, `PhysConst`, Value+MUX).  Then attempts
-    /// parse-validation via `convert_request_from_uds` for the matched service.
-    async fn resolve_service(
-        &self,
+    /// Probe a service DID via request encoding for symbolic PHYS-CONST cases.
+    async fn probe_service_did(
+        manager: &InnerManager<DefaultSecurityPluginData>,
+        service_name: &str,
         sid: u8,
-        did: u16,
-        uds_bytes: &[u8],
-        label: &str,
-    ) -> Option<ResolvedService> {
-        tracing::debug!("[MDD] {} DID 0x{:04X}", label, did);
-
-        let service_name = self.resolve_service_did(sid, did, uds_bytes, label).await?;
-
-        // Attempt parse-validation to extract structured parameter data.
-        let manager = self.manager.read().await;
-        let payload = make_service_payload(uds_bytes);
-        let diag_comm = make_diag_comm(&service_name, sid);
-
-        if let Ok(parsed) = manager
-            .convert_request_from_uds(&diag_comm, &payload, true)
-            .await
-            && let Ok(json_resp) = parsed.into_json()
-            && let serde_json::Value::Object(map) = json_resp.data
-        {
-            tracing::debug!(
-                "[MDD] {} DID 0x{:04X} -> '{}' (parse verified)",
-                label,
-                did,
-                service_name
-            );
-            return Some(ResolvedService {
-                name: service_name,
-                params: map,
-            });
+        params: &[ServiceParameterMetadata],
+    ) -> Option<u16> {
+        let mut param_map: HashMap<String, serde_json::Value> = HashMap::default();
+        for param in params {
+            match &param.param_type {
+                cda_interfaces::ParameterTypeMetadata::CodedConst { coded_value } => {
+                    // `?` is intentional: if any CodedConst can't be parsed we cannot
+                    // build a valid probe request, so abort the entire probe.
+                    let parsed = parse_u64_literal(coded_value)?;
+                    param_map.insert(param.name.clone(), serde_json::json!(parsed));
+                }
+                cda_interfaces::ParameterTypeMetadata::PhysConst {
+                    phys_constant_value,
+                    ..
+                } => {
+                    param_map.insert(param.name.clone(), serde_json::json!(phys_constant_value));
+                }
+                cda_interfaces::ParameterTypeMetadata::Value { .. } => {
+                    // Use string probe value for VALUE params to satisfy DOPs that
+                    // parse textual values (TEXTTABLE / string-typed fields).
+                    param_map.insert(param.name.clone(), serde_json::json!("0"));
+                }
+                cda_interfaces::ParameterTypeMetadata::MatchingRequestParam { .. } => {}
+            }
         }
 
-        // Parse failed — still return the metadata-resolved service with empty map.
-        tracing::debug!(
-            "[MDD] {} DID 0x{:04X} -> '{}' (metadata match, parse unavailable)",
-            label,
-            did,
-            service_name
-        );
-        Some(ResolvedService {
-            name: service_name,
-            params: serde_json::Map::new(),
-        })
+        let diag_comm = make_diag_comm(service_name, sid);
+        let security_plugin: DynamicPlugin = Box::new(());
+
+        let payload = manager
+            .create_uds_payload(
+                &diag_comm,
+                &security_plugin,
+                Some(UdsPayloadData::ParameterMap(param_map)),
+            )
+            .await
+            .ok()?;
+
+        let probed_did = extract_did_from_uds(&payload.data)?;
+        // ISO 14229-1: DID 0x0000 is reserved; treat zero as unresolvable.
+        if probed_did == 0 {
+            None
+        } else {
+            Some(probed_did)
+        }
     }
 }
 

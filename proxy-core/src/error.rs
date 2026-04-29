@@ -173,6 +173,14 @@ impl Nrc {
     }
 }
 
+impl TryFrom<u8> for Nrc {
+    type Error = ();
+
+    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
+        Self::from_u8(value).ok_or(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

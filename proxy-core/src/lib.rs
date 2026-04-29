@@ -22,4 +22,6 @@ pub mod service_resolver;
 
 pub use config::Config;
 pub use error::{ProxyError, Result};
-pub use service_resolver::{ResolvedService, ServiceResolver};
+pub use service_resolver::{
+    DidResolver, MetadataProvider, ResolvedService, ResponseEncoder, ServiceResolver,
+};

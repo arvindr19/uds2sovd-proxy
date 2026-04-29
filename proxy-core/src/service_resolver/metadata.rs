@@ -10,23 +10,31 @@
  * https://www.apache.org/licenses/LICENSE-2.0
  */
 
-//! Service metadata queries and lookup.
-//!
-//! Methods for querying request/response parameter metadata from the MDD,
-//! looking up services by SID, and retrieving MUX case information.
+//! MDD metadata queries for service parameters, response layouts, and MUX cases.
 
 use cda_interfaces::{
     DiagServiceError, DynamicPlugin, EcuManager as EcuManagerTrait, MuxCaseInfo,
     ServiceParameterMetadata, service_ids,
 };
 
-use super::{ServiceResolver, uds_helpers::has_mux_case_for_did_exact};
+use super::{CdaEcuManager, uds_helpers::has_mux_case_for_did_exact};
 
-impl ServiceResolver {
-    /// Retrieve request parameter metadata for a service.
+#[derive(Clone)]
+pub struct MetadataProvider {
+    manager: CdaEcuManager,
+}
+
+impl MetadataProvider {
+    pub(super) fn new(manager: CdaEcuManager) -> Self {
+        Self { manager }
+    }
+
+    /// Return the request parameter layout for `service_name`.
     ///
     /// # Errors
-    /// Returns an error if the metadata is not available.
+    ///
+    /// Returns `DiagServiceError` when the service is unknown or the MDD
+    /// does not contain request metadata.
     pub async fn get_service_parameter_metadata(
         &self,
         service_name: &str,
@@ -35,10 +43,12 @@ impl ServiceResolver {
         manager.get_request_parameter_metadata(service_name)
     }
 
-    /// Retrieve POS-RESPONSE parameter metadata (byte positions, sizes, types).
+    /// Return the POS-RESPONSE parameter layout (byte positions, sizes, types).
     ///
     /// # Errors
-    /// Returns an error if the metadata is not available.
+    ///
+    /// Returns `DiagServiceError` when the service is unknown or no response
+    /// metadata exists.
     pub async fn get_response_parameter_metadata(
         &self,
         service_name: &str,
@@ -60,7 +70,8 @@ impl ServiceResolver {
     /// MUX-based metadata instead, so callers get per-field byte positions.
     ///
     /// # Errors
-    /// Returns an error if the metadata is not available.
+    ///
+    /// Returns `DiagServiceError` when the base metadata lookup fails.
     pub async fn get_enriched_response_metadata(
         &self,
         service_name: &str,
@@ -71,13 +82,14 @@ impl ServiceResolver {
             .map(|(meta, _source)| meta)
     }
 
-    /// Lookup all service names for a given UDS service ID (SID).
+    /// Return all service names registered under a given UDS SID.
     ///
     /// Returns READ services for SID 0x22, WRITE services for SID 0x2E,
-    /// or an empty vector for unrecognized SIDs.
+    /// or an empty vector for unrecognised SIDs.
     ///
     /// # Errors
-    /// Does not currently return errors; always succeeds with a Vec<String>.
+    ///
+    /// Returns `DiagServiceError` when the service name lookup fails.
     pub async fn lookup_service_names_by_sid(
         &self,
         sid: u8,
@@ -101,13 +113,15 @@ impl ServiceResolver {
         Ok(names)
     }
 
-    /// Retrieve MUX case definitions for a given service.
+    /// Return MUX case definitions for `service_name`.
     ///
     /// Queries the MDD for all MUX cases associated with the service,
     /// used to determine which parameters are active for each MUX value.
     ///
     /// # Errors
-    /// Returns an error if the service is not found or MDD query fails.
+    ///
+    /// Returns `DiagServiceError` when the service is unknown or the MDD
+    /// query fails.
     pub async fn get_mux_cases_for_service(
         &self,
         service_name: &str,
@@ -116,17 +130,19 @@ impl ServiceResolver {
         manager.get_mux_cases_for_service(service_name)
     }
 
-    /// Retrieve enriched POS-RESPONSE metadata with source service name.
+    /// Retrieve enriched POS-RESPONSE metadata with the source service name.
     ///
-    /// Same as [`MetadataQuerying::get_enriched_response_metadata`] but also returns
-    /// the name of the service that actually provided the metadata. When the response is
-    /// "opaque" (single STRUCTURE ref) and a MUX-based sibling is used, the
-    /// returned name is the sibling — callers that need to validate via
-    /// `convert_from_uds` must use this name, not the original.
+    /// Same as [`get_enriched_response_metadata`](Self::get_enriched_response_metadata)
+    /// but also returns the name of the service that actually provided the
+    /// metadata.  When the response is "opaque" (single STRUCTURE ref) and a
+    /// MUX-based sibling is used, the returned name is the sibling -- callers
+    /// that need to validate via `convert_from_uds` must use this name, not
+    /// the original.
     ///
     /// # Errors
-    /// Returns an error if the metadata is not available.
-    pub(super) async fn get_enriched_response_metadata_with_source(
+    ///
+    /// Returns `DiagServiceError` when the base metadata lookup fails.
+    pub async fn get_enriched_response_metadata_with_source(
         &self,
         service_name: &str,
         did: u16,
@@ -134,8 +150,8 @@ impl ServiceResolver {
         let manager = self.manager.read().await;
         let meta = manager.get_response_parameter_metadata(service_name)?;
 
-        // Heuristic: the response is "opaque" when the only data param
-        // (after SID + DID) is a single VALUE with byte_size = None.
+        // Heuristic: the response is "opaque" when the only data param (after
+        // SID + DID) is a single VALUE with byte_size = None.
         let data_params: Vec<_> = meta
             .iter()
             .filter(|p| {
@@ -193,7 +209,7 @@ impl ServiceResolver {
             }
         }
 
-        // No MUX sibling found — use original metadata.
+        // No MUX sibling found -- use original metadata.
         Ok((meta, service_name.to_string()))
     }
 }
@@ -243,7 +259,7 @@ mod tests {
     #[test]
     fn test_has_mux_exact_no_match() {
         let meta = vec![mux_case("VIN", 0xF190)];
-        // 0xF191 is one beyond the only entry — no match.
+        // 0xF191 is one beyond the only entry -- no match.
         assert!(!has_mux_case_for_did_exact(&meta, 0xF191));
     }
 
@@ -271,12 +287,12 @@ mod tests {
     #[test]
     fn test_floor_vs_exact_differ_for_range_case() {
         let meta = vec![mux_case("RANGE", 0xF100), mux_case("OTHER", 0xF200)];
-        // Floor: 0xF103 falls in the 0xF100 range → prefix returned.
+        // Floor: 0xF103 falls in the 0xF100 range -> prefix returned.
         assert_eq!(
             find_mux_case_prefix(&meta, 0xF103),
             Some("RANGE/".to_string())
         );
-        // Exact: 0xF103 has no exact entry → false.
+        // Exact: 0xF103 has no exact entry -> false.
         assert!(!has_mux_case_for_did_exact(&meta, 0xF103));
         // But 0xF100 itself is an exact hit.
         assert!(has_mux_case_for_did_exact(&meta, 0xF100));
@@ -289,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_opaque_heuristic_single_none_size_param() {
-        // Only one VALUE param with byte_size = None and no '/' in name → opaque.
+        // Only one VALUE param with byte_size = None and no '/' in name -> opaque.
         let param = ResponseParameterInfo {
             name: "STRUCTURE_DATA".to_string(),
             semantic: None,
@@ -339,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_opaque_heuristic_mux_subparam_not_opaque() {
-        // A MUX sub-param has '/' in its name → not opaque even if byte_size is None.
+        // A MUX sub-param has '/' in its name -> not opaque even if byte_size is None.
         let param = ResponseParameterInfo {
             name: "__mux_case__/VIN/DATA".to_string(),
             semantic: None,
@@ -369,7 +385,7 @@ mod tests {
 
     #[test]
     fn test_opaque_heuristic_multiple_params_not_opaque() {
-        // Multiple VALUE params → structured layout, NOT opaque.
+        // Multiple VALUE params -> structured layout, NOT opaque.
         let params = vec![value_param("FIELD_A", 3, 2), value_param("FIELD_B", 5, 1)];
         let data_params: Vec<_> = params
             .iter()

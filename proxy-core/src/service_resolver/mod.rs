@@ -10,39 +10,14 @@
  * https://www.apache.org/licenses/LICENSE-2.0
  */
 
-//! ECU Manager wrapper for MDD-driven UDS request/response processing.
+//! MDD-driven UDS encoding, decoding, and service resolution.
 //!
-//! Provides a simplified interface to the CDA's
-//! `EcuManager` for encoding/decoding UDS messages using the loaded MDD
-//! diagnostic database.
+//! `ServiceResolver` is a thin facade that owns the CDA `EcuManager` and
+//! exposes three focused sub-components via accessor methods:
 //!
-//! ## Module layout
-//!
-//! - [`uds_helpers`]: Pure helper functions for UDS encoding, decoding, MUX
-//!   matching, and payload construction.
-//! - [`response`]: UDS response building and round-trip validation.
-//! - [`metadata`]: Service metadata queries and MUX-sibling enrichment.
-//! - [`resolve`]: DID-to-service resolution, request parsing, and probing.
-//!
-//! ## Service resolution
-//!
-//! When a UDS request arrives the proxy must identify which diagnostic service
-//! from the MDD it belongs to (e.g. `WDBI_VIN` vs `WDBI_PLAIN` for SID 0x2E).
-//!
-//! Resolution uses `lookup_diagcomms_by_request_prefix` with the full
-//! `[SID, DID_HI, DID_LO]` prefix, which directly matches services whose
-//! sequential coded-const parameters match the request bytes.  This handles
-//! CODED-CONST DID services in a single call.
-//!
-//! For services where the DID is not a coded constant (`PhysConst` / Value),
-//! the prefix lookup returns all SID-matching services and the resolver
-//! confirms the DID via request parameter metadata:
-//!
-//!   - **`CodedConst`**: exact DID match.
-//!   - **`PhysConst`**: resolved `coded_value` or `create_uds_payload` probe.
-//!   - **Value**: `coded_default_value` or `CompuScale` range match.
-//!
-//! If no service matches, an error is logged — no fallback.
+//! - [`DidResolver`] -- DID-to-service resolution
+//! - [`ResponseEncoder`] -- UDS response encoding
+//! - [`MetadataProvider`] -- MDD parameter queries
 
 mod metadata;
 mod resolve;
@@ -51,7 +26,7 @@ pub mod uds_helpers;
 
 use std::sync::Arc;
 
-use cda_core::{DiagServiceResponseStruct, EcuManager as CdaEcuManager};
+use cda_core::{DiagServiceResponseStruct, EcuManager};
 use cda_database::datatypes::DiagnosticDatabase;
 use cda_interfaces::{
     DiagComm, DiagCommType, DiagServiceError, EcuManager as EcuManagerTrait, EcuManagerType,
@@ -60,10 +35,15 @@ use cda_interfaces::{
     diagservices::DiagServiceResponseType,
 };
 use cda_plugin_security::DefaultSecurityPluginData;
+pub use metadata::MetadataProvider;
+pub use resolve::{DidResolver, ResolvedService};
+pub use response::ResponseEncoder;
 use tokio::sync::RwLock;
 pub use uds_helpers::{
     UdsResponse, find_mux_case_prefix, has_mux_case_for_did_exact, parse_mux_coded_value,
 };
+
+pub(crate) type CdaEcuManager = Arc<RwLock<EcuManager<DefaultSecurityPluginData>>>;
 
 /// Minimum UDS negative response length: 0x7F + SID + NRC.
 const UDS_NEGATIVE_RESPONSE_MIN_LEN: usize = 3;
@@ -71,38 +51,19 @@ const UDS_NEGATIVE_RESPONSE_MIN_LEN: usize = 3;
 /// Minimum UDS positive response buffer size: response SID (1) + DID high (1) + DID low (1).
 const UDS_POSITIVE_RESPONSE_MIN_SIZE: usize = 3;
 
-/// Result of a successful UDS DID-to-service resolution.
-pub struct ResolvedService {
-    /// The matched MDD service name (e.g. `"RDBI_VIN"`).
-    pub name: String,
-    /// Decoded request parameters as a JSON map.
-    ///
-    /// Empty when the CDA request parser is unavailable for the matched service.
-    pub params: serde_json::Map<String, serde_json::Value>,
-}
-
-/// Wraps the CDA's [`EcuManager`] with async locking
-/// to provide MDD-driven UDS encoding, decoding, and service resolution
 #[derive(Clone)]
 pub struct ServiceResolver {
-    /// All post-construction access uses `.read()` for concurrent reads.
-    /// The write lock is reserved for future runtime variant detection
-    /// (`detect_variant` requires `&mut CdaEcuManager`).
-    manager: Arc<RwLock<CdaEcuManager<DefaultSecurityPluginData>>>,
+    manager: CdaEcuManager,
     ecu_name: String,
 }
 
 impl ServiceResolver {
-    /// Create new service resolver from ECU name and MDD database.
-    ///
-    /// # Arguments
-    /// * `ecu_name` - Name of the ECU
-    /// * `db` - Loaded `DiagnosticDatabase` from MDD file
-    /// * `logical_address` - ECU logical address (e.g. 0x1000)
-    /// * `tester_address` - Tester logical address (e.g. 0x0E80)
+    /// Initialise from an ECU name and a loaded MDD database.
     ///
     /// # Errors
-    /// Returns an error if the ECU manager cannot be initialized from the database.
+    ///
+    /// Returns `DiagServiceError` when the CDA `EcuManager` cannot be created
+    /// or the base variant fails to activate.
     pub async fn new(
         ecu_name: String,
         db: DiagnosticDatabase,
@@ -118,7 +79,7 @@ impl ServiceResolver {
             protocol_case_sensitive: false,
         };
 
-        let mut manager = CdaEcuManager::new(
+        let mut manager = EcuManager::new(
             db,
             Protocol::DoIp,
             &com_params,
@@ -140,6 +101,30 @@ impl ServiceResolver {
         })
     }
 
+    /// Return a [`DidResolver`] for DID-to-service resolution.
+    #[must_use]
+    pub fn did_resolver(&self) -> DidResolver {
+        DidResolver::new(Arc::clone(&self.manager))
+    }
+
+    /// Return a [`ResponseEncoder`] for building UDS response bytes.
+    #[must_use]
+    pub fn response_encoder(&self) -> ResponseEncoder {
+        ResponseEncoder::new(Arc::clone(&self.manager))
+    }
+
+    /// Return a [`MetadataProvider`] for MDD parameter queries.
+    #[must_use]
+    pub fn metadata(&self) -> MetadataProvider {
+        MetadataProvider::new(Arc::clone(&self.manager))
+    }
+
+    /// ECU name as configured at construction time.
+    #[must_use]
+    pub fn ecu_name(&self) -> &str {
+        &self.ecu_name
+    }
+
     /// Activate the base (fallback) ECU variant.
     ///
     /// The CDA's diagnostic engine requires a variant to be selected before
@@ -158,13 +143,13 @@ impl ServiceResolver {
     ///   3. The engine narrows the active variant and limits visible services.
     ///
     /// # Errors
-    /// Returns an error only when `detect_variant` fails **and** no variant
-    /// name was set (i.e. the engine did not activate at all).
+    ///
+    /// Returns `DiagServiceError` when `detect_variant` fails and no
+    /// variant name was set.
     async fn activate_base_variant(
-        manager: &mut CdaEcuManager<DefaultSecurityPluginData>,
+        manager: &mut EcuManager<DefaultSecurityPluginData>,
     ) -> Result<(), DiagServiceError> {
-        // `TODO:` replace this dummy response with real variant-identification
-        // DID reads from the ECU (see doc comment above).
+        // TODO(#16): replace with real variant-identification DID reads.
         let dummy_response = DiagServiceResponseStruct {
             service: DiagComm {
                 name: String::new(),
@@ -195,24 +180,7 @@ impl ServiceResolver {
             })
     }
 
-    /// Check if a UDS response is negative (SID 0x7F).
-    #[must_use]
-    pub fn is_negative_response(uds_response: &[u8]) -> bool {
-        UdsResponse::new(uds_response).is_negative()
-    }
-
-    /// Extract NRC (Negative Response Code) from a negative response.
-    #[must_use]
-    pub fn get_nrc(uds_response: &[u8]) -> Option<u8> {
-        UdsResponse::new(uds_response).nrc()
-    }
-
-    /// Get ECU name.
-    #[must_use]
-    pub fn ecu_name(&self) -> &str {
-        &self.ecu_name
-    }
-
+    /// Build default `DoIP` communication parameters for the given addresses.
     fn default_com_params(logical_address: u16, tester_address: u16) -> ComParams {
         let mut com_params = ComParams::default();
         com_params.doip.logical_gateway_address.default = logical_address;
@@ -228,21 +196,21 @@ mod tests {
 
     #[test]
     fn test_is_negative_response() {
-        assert!(!ServiceResolver::is_negative_response(&[0x62, 0xF1, 0x90]));
-        assert!(!ServiceResolver::is_negative_response(&[0x50, 0x01]));
-        assert!(ServiceResolver::is_negative_response(&[0x7F, 0x22, 0x31]));
-        assert!(!ServiceResolver::is_negative_response(&[0x7F]));
-        assert!(!ServiceResolver::is_negative_response(&[0x7F, 0x22]));
+        assert!(!UdsResponse::new(&[0x62, 0xF1, 0x90]).is_negative());
+        assert!(!UdsResponse::new(&[0x50, 0x01]).is_negative());
+        assert!(UdsResponse::new(&[0x7F, 0x22, 0x31]).is_negative());
+        assert!(!UdsResponse::new(&[0x7F]).is_negative());
+        assert!(!UdsResponse::new(&[0x7F, 0x22]).is_negative());
     }
 
     #[test]
     fn test_get_nrc() {
-        assert_eq!(ServiceResolver::get_nrc(&[0x62, 0xF1, 0x90]), None);
-        assert_eq!(ServiceResolver::get_nrc(&[0x7F, 0x22, 0x31]), Some(0x31));
-        assert_eq!(ServiceResolver::get_nrc(&[0x7F, 0x10, 0x11]), Some(0x11));
-        assert_eq!(ServiceResolver::get_nrc(&[0x7F, 0x22, 0x22]), Some(0x22));
-        assert_eq!(ServiceResolver::get_nrc(&[0x7F]), None);
-        assert_eq!(ServiceResolver::get_nrc(&[0x7F, 0x22]), None);
+        assert_eq!(UdsResponse::new(&[0x62, 0xF1, 0x90]).nrc(), None);
+        assert_eq!(UdsResponse::new(&[0x7F, 0x22, 0x31]).nrc(), Some(0x31));
+        assert_eq!(UdsResponse::new(&[0x7F, 0x10, 0x11]).nrc(), Some(0x11));
+        assert_eq!(UdsResponse::new(&[0x7F, 0x22, 0x22]).nrc(), Some(0x22));
+        assert_eq!(UdsResponse::new(&[0x7F]).nrc(), None);
+        assert_eq!(UdsResponse::new(&[0x7F, 0x22]).nrc(), None);
     }
 
     #[test]
@@ -258,23 +226,17 @@ mod tests {
             (0x22, 0x78, 0x78),
         ];
         for &(sid, nrc, expected) in cases {
-            assert_eq!(ServiceResolver::get_nrc(&[0x7F, sid, nrc]), Some(expected));
+            assert_eq!(UdsResponse::new(&[0x7F, sid, nrc]).nrc(), Some(expected));
         }
     }
 
     #[test]
     fn test_positive_response_sids() {
-        assert!(!ServiceResolver::is_negative_response(&[
-            0x50, 0x01, 0x00, 0x32
-        ]));
-        assert!(!ServiceResolver::is_negative_response(&[
-            0x62, 0xF1, 0x90, 0x57
-        ]));
-        assert!(!ServiceResolver::is_negative_response(&[
-            0x67, 0x01, 0x12, 0x34
-        ]));
-        assert!(!ServiceResolver::is_negative_response(&[0x6E, 0xF1, 0x90]));
-        assert!(!ServiceResolver::is_negative_response(&[0x7E, 0x00]));
+        assert!(!UdsResponse::new(&[0x50, 0x01, 0x00, 0x32]).is_negative());
+        assert!(!UdsResponse::new(&[0x62, 0xF1, 0x90, 0x57]).is_negative());
+        assert!(!UdsResponse::new(&[0x67, 0x01, 0x12, 0x34]).is_negative());
+        assert!(!UdsResponse::new(&[0x6E, 0xF1, 0x90]).is_negative());
+        assert!(!UdsResponse::new(&[0x7E, 0x00]).is_negative());
     }
 
     #[test]
@@ -299,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_empty_response() {
-        assert!(!ServiceResolver::is_negative_response(&[]));
-        assert_eq!(ServiceResolver::get_nrc(&[]), None);
+        assert!(!UdsResponse::new(&[]).is_negative());
+        assert_eq!(UdsResponse::new(&[]).nrc(), None);
     }
 }

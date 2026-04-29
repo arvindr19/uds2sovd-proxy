@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "cda-build"
 version = "0.1.0"
-source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=ed58d5f9524f483c3f9409a1a79a12ab8261568c#ed58d5f9524f483c3f9409a1a79a12ab8261568c"
+source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b#cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b"
 dependencies = [
  "rustversion",
 ]
@@ -214,7 +214,7 @@ dependencies = [
 [[package]]
 name = "cda-core"
 version = "0.1.0"
-source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=ed58d5f9524f483c3f9409a1a79a12ab8261568c#ed58d5f9524f483c3f9409a1a79a12ab8261568c"
+source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b#cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b"
 dependencies = [
  "cda-database",
  "cda-interfaces",
@@ -231,7 +231,7 @@ dependencies = [
 [[package]]
 name = "cda-database"
 version = "0.1.0"
-source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=ed58d5f9524f483c3f9409a1a79a12ab8261568c#ed58d5f9524f483c3f9409a1a79a12ab8261568c"
+source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b#cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b"
 dependencies = [
  "bytes",
  "cargo_toml",
@@ -255,7 +255,7 @@ dependencies = [
 [[package]]
 name = "cda-interfaces"
 version = "0.1.0"
-source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=ed58d5f9524f483c3f9409a1a79a12ab8261568c#ed58d5f9524f483c3f9409a1a79a12ab8261568c"
+source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b#cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b"
 dependencies = [
  "async-trait",
  "bytes",
@@ -275,7 +275,7 @@ dependencies = [
 [[package]]
 name = "cda-plugin-security"
 version = "0.1.0"
-source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=ed58d5f9524f483c3f9409a1a79a12ab8261568c#ed58d5f9524f483c3f9409a1a79a12ab8261568c"
+source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b#cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b"
 dependencies = [
  "aide",
  "async-trait",
@@ -1721,7 +1721,7 @@ dependencies = [
 [[package]]
 name = "sovd-interfaces"
 version = "0.1.0"
-source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=ed58d5f9524f483c3f9409a1a79a12ab8261568c#ed58d5f9524f483c3f9409a1a79a12ab8261568c"
+source = "git+https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git?rev=cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b#cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b"
 dependencies = [
  "cda-interfaces",
  "chrono",

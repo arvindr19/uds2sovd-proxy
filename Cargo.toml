@@ -22,10 +22,10 @@ members = ["proxy-core"]
 proxy-core = { path = "proxy-core" }
 proxy-doip = { path = "proxy-doip" }
 proxy-sovd = { path = "proxy-sovd" }
-cda-core = { git = "https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git", rev = "ed58d5f9524f483c3f9409a1a79a12ab8261568c" }
-cda-database = { git = "https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git", rev = "ed58d5f9524f483c3f9409a1a79a12ab8261568c" }
-cda-interfaces = { git = "https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git", rev = "ed58d5f9524f483c3f9409a1a79a12ab8261568c" }
-cda-plugin-security = { git = "https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git", rev = "ed58d5f9524f483c3f9409a1a79a12ab8261568c" }
+cda-core = { git = "https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git", rev = "cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b" }
+cda-database = { git = "https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git", rev = "cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b" }
+cda-interfaces = { git = "https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git", rev = "cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b" }
+cda-plugin-security = { git = "https://github.com/eclipse-opensovd/classic-diagnostic-adapter.git", rev = "cf7fd9c18a7c49467e9e6c9ceae1e771c613e49b" }
 
 # ---- common crates ----
 async-trait = "0.1.89"

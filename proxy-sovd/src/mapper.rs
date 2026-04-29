@@ -16,7 +16,6 @@ use proxy_core::{
     error::{Result, SovdError},
 };
 use serde_json::{Map, Value};
-use tracing::{debug, info, trace};
 
 use crate::{client::SovdClient, schema::DataResponse};
 
@@ -70,12 +69,12 @@ impl SovdMapper {
         service_name: &str,
         parsed_data: Option<Map<String, Value>>,
     ) -> Result<Vec<u8>> {
-        debug!(
+        tracing::debug!(
             "[RDBI] DID 0x{:04X} service='{}' request={:02X?}",
             did, service_name, uds_request
         );
         if let Some(ref parsed) = parsed_data {
-            trace!(
+            tracing::trace!(
                 "[RDBI] Parsed request: {}",
                 serde_json::to_string_pretty(parsed).unwrap_or_default()
             );
@@ -88,11 +87,12 @@ impl SovdMapper {
             self.mock_read_response(did, service_name, &sovd_endpoint, ecu_manager)
                 .await?
         } else {
+            // TODO(sovd-server): read path - not exercised while mock_gateway = true.
             let resp = self
                 .sovd_client
                 .read_data(component, &sovd_endpoint)
                 .await?;
-            debug!(
+            tracing::debug!(
                 "[RDBI] SOVD response for '{}': {:?}",
                 sovd_endpoint, resp.data
             );
@@ -103,7 +103,7 @@ impl SovdMapper {
             .sovd_json_to_uds(did, &sovd_response, ecu_manager, service_name)
             .await?;
 
-        info!(
+        tracing::info!(
             "[RDBI] DID 0x{:04X} '{}' -> {} bytes: {:02X?}",
             did,
             service_name,
@@ -128,7 +128,8 @@ impl SovdMapper {
 
         let sovd_endpoint = service_name.to_lowercase();
 
-        debug!(
+        let sovd_write_data = parsed_data;
+        tracing::debug!(
             "[WDBI] SOVD JSON data: {}",
             serde_json::to_string_pretty(&parsed_data).unwrap_or_default()
         );
@@ -145,7 +146,7 @@ impl SovdMapper {
             (did & 0xFF) as u8,
         ];
 
-        info!(
+        tracing::info!(
             "[WDBI] DID 0x{:04X} '{}' -> {} bytes",
             did,
             service_name,
@@ -168,7 +169,7 @@ impl SovdMapper {
             self.config.ecu.default_name,
             sovd_endpoint
         );
-        info!(
+        tracing::info!(
             "[SOVD MOCK] GET {} (intercepted —> generating synthetic response)",
             would_be_url
         );
@@ -179,7 +180,7 @@ impl SovdMapper {
         {
             Ok(m) => m,
             Err(e) => {
-                debug!(
+                tracing::debug!(
                     "[SOVD MOCK] Enriched metadata unavailable for '{}': {}. Falling back to \
                      basic POS-RESPONSE metadata",
                     service_name, e
@@ -207,7 +208,7 @@ impl SovdMapper {
             .sovd_client
             .generate_mock_response_data(sovd_endpoint, &meta, did);
 
-        debug!(
+        tracing::debug!(
             "[SOVD MOCK] Generated response SOVD JSON data:\n{}",
             serde_json::to_string_pretty(&data).unwrap_or_default()
         );
@@ -244,7 +245,7 @@ impl SovdMapper {
                 ))
             })?;
 
-        debug!(
+        tracing::debug!(
             "[MDD] SOVD JSON -> UDS for '{}': {:02X?}",
             service_name, uds_bytes
         );

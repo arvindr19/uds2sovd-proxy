@@ -22,7 +22,6 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::RwLock;
-use tracing::{debug, info};
 
 use crate::schema::DataResponse;
 
@@ -85,10 +84,11 @@ impl SovdClient {
         if self.config.mock_gateway {
             let token = "mock-access-token".to_string();
             *self.access_token.write().await = Some(token.clone());
-            info!("[SOVD] Mock authentication enabled");
+            tracing::info!("[SOVD] Mock authentication enabled");
             return Ok(token);
         }
 
+        // TODO(sovd-server): OAuth2 token exchange - only reached when mock_gateway = false.
         let url = format!(
             "{}/vehicle/{}/authorize",
             self.config.gateway_url, self.config.api_version
@@ -121,6 +121,8 @@ impl SovdClient {
         Ok(auth_resp.access_token)
     }
 
+    // TODO(sovd-server): token cache helper - only called from the read_data / write_data
+    // paths that are bypassed when mock_gateway = true.
     async fn get_token(&self) -> Result<String> {
         {
             let token_guard = self.access_token.read().await;
@@ -135,6 +137,11 @@ impl SovdClient {
     ///
     /// # Errors
     /// Returns an error if the read request fails.
+    ///
+    /// # Note
+    /// Not called when `mock_gateway = true` - [`SovdMapper`] intercepts the request
+    /// in [`SovdMapper::mock_read_response`] before reaching this function.
+    // TODO(sovd-server): placeholder - wire up once a real SOVD server is available.
     pub async fn read_data(&self, component: &str, data_id: &str) -> Result<DataResponse> {
         let token = self.get_token().await?;
         let url = format!(
@@ -142,7 +149,7 @@ impl SovdClient {
             self.config.gateway_url, self.config.api_version, component, data_id
         );
 
-        info!("[SOVD] GET {}", url);
+        tracing::info!("[SOVD] GET {}", url);
 
         let mut request = self.client.get(&url).bearer_auth(&token);
         if self.config.include_schema {
@@ -156,12 +163,12 @@ impl SovdClient {
 
         match response.status() {
             StatusCode::OK => {
+                tracing::info!("[SOVD] Response: HTTP 200 OK");
                 let data: DataResponse = response
                     .json()
                     .await
                     .map_err(|e| SovdError::Http(e.to_string()))?;
-                info!("[SOVD] Response: HTTP 200 OK");
-                debug!("[SOVD] Data: {} = {:?}", data.id, data.data);
+                tracing::debug!("[SOVD] Data: {} = {:?}", data.id, data.data);
                 Ok(data)
             }
             StatusCode::NOT_FOUND => Err(SovdError::DataIdNotFound(data_id.to_string()).into()),
@@ -184,13 +191,15 @@ impl SovdClient {
     ) -> Result<()> {
         if self.config.mock_gateway {
             // SID 0x2E (WriteDataByIdentifier) maps to SOVD /configurations/{service}
-            info!(
+            tracing::info!(
                 "[SOVD MOCK] PUT /components/{}/configurations/{}",
-                component, data_id
+                component,
+                data_id
             );
             return Ok(());
         }
 
+        // TODO(sovd-server): real HTTP PUT - only reached when mock_gateway = false.
         let token = self.get_token().await?;
 
         let url = format!(
@@ -198,7 +207,7 @@ impl SovdClient {
             self.config.gateway_url, self.config.api_version, component, data_id
         );
 
-        info!("[SOVD] PUT {}", url);
+        tracing::info!("[SOVD] PUT {}", url);
 
         let write_req = WriteDataRequest {
             data: Value::Object(data),
@@ -215,7 +224,7 @@ impl SovdClient {
 
         match response.status() {
             StatusCode::NO_CONTENT | StatusCode::OK | StatusCode::ACCEPTED => {
-                info!("[SOVD] Write successful: HTTP {}", response.status());
+                tracing::info!("[SOVD] Write successful: HTTP {}", response.status());
                 Ok(())
             }
             StatusCode::BAD_REQUEST => {
@@ -245,6 +254,7 @@ impl SovdClient {
     ///
     /// When the service uses MUX cases, only parameters belonging to the
     /// case that matches `did` are included.
+    /// TODO(sovd-server): Remove this function once sovd-server provides real responses.
     #[must_use]
     pub fn generate_mock_response_data(
         &self,
@@ -267,12 +277,9 @@ impl SovdClient {
                     return false;
                 }
                 if p.name.contains('/') {
-                    if let Some(prefix) = &mux_case_prefix {
-                        if !p.name.starts_with(prefix.as_str()) {
-                            return false;
-                        }
-                    } else {
-                        return false;
+                    match &mux_case_prefix {
+                        Some(prefix) if p.name.starts_with(prefix.as_str()) => {}
+                        _ => return false,
                     }
                 }
                 matches!(
@@ -295,12 +302,9 @@ impl SovdClient {
             }
             // Skip params from non-matching MUX cases.
             if p.name.contains('/') {
-                if let Some(prefix) = &mux_case_prefix {
-                    if !p.name.starts_with(prefix.as_str()) {
-                        continue;
-                    }
-                } else {
-                    continue;
+                match &mux_case_prefix {
+                    Some(prefix) if p.name.starts_with(prefix.as_str()) => {}
+                    _ => continue,
                 }
             }
             // Skip coded const and matching request params — encoder fills those.

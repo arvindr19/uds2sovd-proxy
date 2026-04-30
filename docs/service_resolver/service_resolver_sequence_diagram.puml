@@ -21,16 +21,10 @@ participant "CDA EcuManager" as CDA
 
 == READ Service Resolution ==
 
-Client -> Facade: did_resolver()
-Facade --> Client: DidResolver
-
-Client -> Resolver: resolve_read_service(did, uds_bytes)
+Client -> Resolver: resolve(ServiceType::Read, did, uds_bytes)
 activate Resolver
 
-Resolver -> Resolver: resolve_service(SID=0x22, did, uds_bytes, "READ")
-activate Resolver
-
-  Resolver -> Resolver: resolve_service_did(sid, did, uds_bytes, "READ")
+  Resolver -> Resolver: resolve_service_did(sid=0x22, did, label="READ")
   activate Resolver
 
     Resolver -> CDA: lookup_diagcomms_by_request_prefix([0x22, DID_HI, DID_LO])
@@ -38,7 +32,7 @@ activate Resolver
     CDA --> Resolver: matching_services
     deactivate CDA
 
-    Resolver -> Resolver: build_did_candidates(manager, prefix, sid, did)
+    Resolver -> Resolver: build_did_candidates(manager, did_prefix, sid, did, label)
     activate Resolver
     Resolver -> CDA: get_components_data_info() or\nget_components_configurations_info()
     activate CDA
@@ -87,12 +81,13 @@ deactivate Resolver
 
 == WRITE Service Handling ==
 
-note right of Client: Similar flow for WRITE services\nusing SID=0x2E and\nget_components_configurations_info()\nClient calls facade.did_resolver()\nthen resolver.resolve_write_service()
+note right of Client
+  Similar flow for WRITE services
+  client calls resolver.resolve(ServiceType::Write, did, uds_bytes)
+  which uses sid=0x2E and get_components_configurations_info()
+end note
 
 == Response Building ==
-
-Client -> Facade: response_encoder()
-Facade --> Client: ResponseEncoder
 
 Client -> Resp: build_response(service_name, sid, did, response_data)
 activate Resp
@@ -156,20 +151,22 @@ deactivate Resp
 
 note right of Client
 
-  - **ServiceResolver (mod.rs)**: Facade -- construction,
-    variant activation, sub-component accessors
+  - **ServiceResolver (mod.rs)**: construction,
+    variant activation. Sub-components:
+    resolver, encoder, metadata
   - **DidResolver (resolve.rs)**: DID -> service resolution,
     candidate building, metadata matching
   - **ResponseEncoder (response.rs)**: UDS response encoding,
     round-trip validation (debug only)
   - **MetadataProvider (metadata.rs)**: MDD metadata queries,
     MUX sibling enrichment
-  - **uds_helpers.rs**: Pure utilities + UdsResponse --
+  - **uds_helpers.rs**: Pure free functions --
     encoding, decoding, MUX matching
 
   **Data flow:**
-  Caller gets sub-component via accessor, then calls
-  methods directly on that sub-component.
+  Caller accesses resolver, encoder, metadata as
+  direct pub fields on ServiceResolver, then calls methods
+  on those sub-components directly.
   ResponseEncoder holds MetadataProvider internally
   for the cross-module enrichment dependency.
 end note

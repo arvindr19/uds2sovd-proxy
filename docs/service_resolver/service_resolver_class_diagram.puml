@@ -19,38 +19,36 @@ skinparam classFontSize 12
 
 ' ─────────────────────────────────────────────────────────────────
 ' proxy-core::service_resolver
-' Facade (ServiceResolver) owns CdaEcuManager and ecu_name, exposes
-' sub-component accessors.  Each sub-component is a focused struct:
-'   DidResolver      (resolve.rs)   -- DID-to-service resolution
-'   ResponseEncoder  (response.rs)  -- UDS response encoding
-'   MetadataProvider (metadata.rs)  -- MDD parameter queries
-' uds_helpers.rs holds free functions and the UdsResponse type.
+' Facade (ServiceResolver) owns CdaEcuManager and ecu_name.
+' Sub-components are public fields (not accessors):
+'   resolver : DidResolver      (resolve.rs)   -- DID-to-service resolution
+'   encoder  : ResponseEncoder  (response.rs)  -- UDS response encoding
+'   metadata : MetadataProvider (metadata.rs)  -- MDD parameter queries
+' uds_helpers.rs holds pure free functions only.
 ' ─────────────────────────────────────────────────────────────────
 package "proxy-core::service_resolver" {
 
     class ServiceResolver <<facade>> {
         - manager : CdaEcuManager
         - ecu_name : String
-        == mod.rs -- construction & accessors ==
+        + resolver : DidResolver
+        + encoder : ResponseEncoder
+        + metadata : MetadataProvider
+        == mod.rs -- construction ==
         + {static} <<async>> new(ecu_name, db, logical, tester) : Result<Self>
         - {static} <<async>> activate_base_variant(manager) : Result<()>
         - {static} default_com_params(logical, tester: u16) : ComParams
         + ecu_name() : &str
-        + did_resolver() : DidResolver
-        + response_encoder() : ResponseEncoder
-        + metadata() : MetadataProvider
     }
 
     together {
         class DidResolver {
             - manager : CdaEcuManager
             == resolve.rs -- DID --> service name ==
-            + <<async>> resolve_read_service(did, uds) : Option<ResolvedService>
-            + <<async>> resolve_write_service(did, uds) : Option<ResolvedService>
-            - <<async>> resolve_service(sid, did, uds, label) : Option<ResolvedService>
-            - <<async>> resolve_service_did(sid, did, ...) : Option<String>
-            - {static} build_did_candidates(manager, prefix, sid, did) : Option<Vec<String>>
-            - <<async>> match_candidate_did(manager, name, sid, did) : bool
+            + <<async>> resolve(service_type, did, uds) : Option<ResolvedService>
+            - <<async>> resolve_service_did(sid, did, label) : Option<String>
+            - {static} build_did_candidates(manager, did_prefix, sid, did, label) : Option<Vec<String>>
+            - {static} <<async>> match_candidate_did(manager, name, sid, did) : bool
             - {static} <<async>> probe_service_did(manager, name, sid, meta) : Option<u16>
         }
 
@@ -66,8 +64,8 @@ package "proxy-core::service_resolver" {
         class MetadataProvider {
             - manager : CdaEcuManager
             == metadata.rs -- MDD parameter queries ==
-            + <<async>> get_service_parameter_metadata(name) : Result<Vec<Param>>
-            + <<async>> get_response_parameter_metadata(name) : Result<Vec<RespParam>>
+            + <<async>> get_request_params(name) : Result<Vec<Param>>
+            + <<async>> get_response_params(name) : Result<Vec<RespParam>>
             + <<async>> get_enriched_response_metadata(name, did) : Result<Vec<RespParam>>
             + <<async>> get_enriched_response_metadata_with_source(name, did) : Result<(Vec<RespParam>, String)>
             + <<async>> lookup_service_names_by_sid(sid) : Result<Vec<String>>
@@ -98,15 +96,10 @@ package "proxy-core::service_resolver" {
     end note
 
     class uds_helpers <<module: free functions>> {
-        ' -- pub re-exports (used by proxy-sovd) --
+        ' -- pub re-exports --
         + parse_mux_coded_value(coded) : Option<u64>
         + find_mux_case_prefix(meta, did) : Option<String>
         + has_mux_case_for_did_exact(meta, did) : bool
-        == UdsResponse ==
-        + UdsResponse::new(bytes) : UdsResponse
-        + UdsResponse::sid() : Option<u8>
-        + UdsResponse::is_negative() : bool
-        + UdsResponse::nrc() : Option<u8>
         == internal helpers ==
         ~ extract_did_from_uds(data) : Option<u16>
         ~ diag_comm_type(sid) : DiagCommType
@@ -121,8 +114,7 @@ package "proxy-core::service_resolver" {
     }
 
     note bottom of uds_helpers
-        Top 3 + UdsResponse are pub re-exported
-        from mod.rs and used by proxy-sovd.
+        Top 3 are pub re-exported from mod.rs.
     end note
 
     class ResolvedService <<struct>> {
@@ -130,9 +122,9 @@ package "proxy-core::service_resolver" {
         + params : Map
     }
 
-    ServiceResolver --> DidResolver : did_resolver()
-    ServiceResolver --> ResponseEncoder : response_encoder()
-    ServiceResolver --> MetadataProvider : metadata()
+    ServiceResolver *--> DidResolver : resolver (pub field)
+    ServiceResolver *--> ResponseEncoder : encoder (pub field)
+    ServiceResolver *--> MetadataProvider : metadata (pub field)
     ResponseEncoder o--> MetadataProvider : holds (explicit dependency)
     DidResolver ..> uds_helpers : uses
     ResponseEncoder ..> uds_helpers : uses

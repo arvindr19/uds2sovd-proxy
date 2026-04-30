@@ -13,47 +13,12 @@
 //! UDS helper functions and types.
 //!
 //! Pure functions used across the `service_resolver` module: DID extraction,
-//! MUX-case matching, value encoding, payload construction, and
-//! [`UdsResponse`] for structured access to UDS response bytes.
+//! MUX-case matching, value encoding, and payload construction.
 
 use cda_interfaces::{
     CompuScaleInfo, DiagComm, DiagCommType, ResponseParameterInfo, ServiceParameterMetadata,
-    ServicePayload, service_ids,
+    ServicePayload,
 };
-
-use super::UDS_NEGATIVE_RESPONSE_MIN_LEN;
-
-/// Typed accessor for raw UDS response bytes.
-pub struct UdsResponse<'a>(&'a [u8]);
-
-impl<'a> UdsResponse<'a> {
-    /// Wrap raw UDS response bytes.
-    #[must_use]
-    pub fn new(bytes: &'a [u8]) -> Self {
-        Self(bytes)
-    }
-
-    /// Service Identifier byte of the response.
-    #[must_use]
-    pub fn sid(&self) -> Option<u8> {
-        self.0.first().copied()
-    }
-
-    /// Returns `true` if this is a negative response (`0x7F` + SID + NRC).
-    #[must_use]
-    pub fn is_negative(&self) -> bool {
-        self.0.len() >= UDS_NEGATIVE_RESPONSE_MIN_LEN
-            && self.sid() == Some(service_ids::NEGATIVE_RESPONSE)
-    }
-
-    /// Extract the Negative Response Code from a negative response.
-    ///
-    /// Returns `None` if this is not a negative response or the byte is absent.
-    #[must_use]
-    pub fn nrc(&self) -> Option<u8> {
-        self.is_negative().then(|| self.0.get(2).copied()).flatten()
-    }
-}
 
 /// Extract the 16-bit DID from UDS payload bytes at offset 1–2.
 ///
@@ -102,7 +67,7 @@ pub(super) fn encode_unsigned_be(num: u64) -> Vec<u8> {
 /// MDD stores MUX case limits as strings that may be float-formatted
 /// (e.g. `"61699.0"`) or integer-formatted (e.g. `"61699"`).
 #[must_use]
-pub fn parse_mux_coded_value(coded_value: &str) -> Option<u64> {
+pub(super) fn parse_mux_coded_value(coded_value: &str) -> Option<u64> {
     let trimmed = coded_value.trim();
     // Try integer parsing first; fall back to float (MDD may store values like "61699.0").
     // The bounds check (`>= 0.0` and `<= u64::MAX as f64`) ensures the value fits before
@@ -166,7 +131,7 @@ pub fn find_mux_case_prefix(meta: &[ResponseParameterInfo], did: u16) -> Option<
 /// Uses exact (not floor) matching because this is for cross-service sibling
 /// selection where different MUX DOPs can have overlapping ranges.
 #[must_use]
-pub fn has_mux_case_for_did_exact(meta: &[ResponseParameterInfo], did: u16) -> bool {
+pub(super) fn has_mux_case_for_did_exact(meta: &[ResponseParameterInfo], did: u16) -> bool {
     let did_val = u64::from(did);
     meta.iter().any(|p| {
         if let Some(_case_name) = p.name.strip_prefix("__mux_case__/")
@@ -390,36 +355,6 @@ mod tests {
         assert_eq!(payload.target_address, 0);
         assert!(payload.new_session.is_none());
         assert!(payload.new_security.is_none());
-    }
-
-    #[test]
-    fn test_diag_comm_type() {
-        use cda_interfaces::service_ids;
-
-        assert!(matches!(
-            diag_comm_type(service_ids::WRITE_DATA_BY_IDENTIFIER),
-            DiagCommType::Configurations
-        ));
-        assert!(matches!(
-            diag_comm_type(service_ids::READ_DATA_BY_IDENTIFIER),
-            DiagCommType::Data
-        ));
-        assert!(matches!(
-            diag_comm_type(service_ids::SESSION_CONTROL),
-            DiagCommType::Modes
-        ));
-        assert!(matches!(
-            diag_comm_type(service_ids::TESTER_PRESENT),
-            DiagCommType::Data
-        ));
-        assert!(matches!(
-            diag_comm_type(service_ids::ROUTINE_CONTROL),
-            DiagCommType::Operations
-        ));
-        assert!(matches!(
-            diag_comm_type(service_ids::CLEAR_DIAGNOSTIC_INFORMATION),
-            DiagCommType::Faults
-        ));
     }
 
     #[test]

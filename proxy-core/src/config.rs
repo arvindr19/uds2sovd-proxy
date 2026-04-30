@@ -21,6 +21,22 @@ use crate::error::{ProxyError, Result};
 
 /// Required byte length for EID and GID fields per ISO 13400-2.
 const EID_GID_BYTE_LENGTH: usize = 6;
+
+// Default values for ServerConfig.
+const DEFAULT_DOIP_PORT: u16 = 13400;
+const DEFAULT_MAX_CONNECTIONS: usize = 10;
+/// `DoIP` source address (tester logical address used in response messages).
+const DEFAULT_SOURCE_ADDRESS: u16 = 0x0E80;
+
+// Default values for SovdConfig.
+const DEFAULT_GATEWAY_URL: &str = "http://localhost:20002";
+const DEFAULT_CLIENT_ID: &str = "uds2sovd_proxy";
+const DEFAULT_CLIENT_SECRET: &str = "test_secret";
+const DEFAULT_TIMEOUT_MS: u64 = 5000;
+const DEFAULT_API_VERSION: &str = "v15";
+
+// Default values for EcuConfig.
+const DEFAULT_ECU_NAME: &str = "ECU";
 /// Top-level proxy configuration loaded from a TOML file.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Config {
@@ -159,10 +175,10 @@ impl Config {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            doip_port: 13400,
+            doip_port: DEFAULT_DOIP_PORT,
             bind_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            max_connections: 10,
-            source_address: 0x0E80,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            source_address: DEFAULT_SOURCE_ADDRESS,
         }
     }
 }
@@ -170,11 +186,11 @@ impl Default for ServerConfig {
 impl Default for SovdConfig {
     fn default() -> Self {
         Self {
-            gateway_url: "http://localhost:20002".to_string(),
-            client_id: "uds2sovd_proxy".to_string(),
-            client_secret: "test_secret".to_string(),
-            timeout_ms: 5000,
-            api_version: "v15".to_string(),
+            gateway_url: DEFAULT_GATEWAY_URL.to_string(),
+            client_id: DEFAULT_CLIENT_ID.to_string(),
+            client_secret: DEFAULT_CLIENT_SECRET.to_string(),
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            api_version: DEFAULT_API_VERSION.to_string(),
             include_schema: true,
             mock_gateway: false,
         }
@@ -184,7 +200,7 @@ impl Default for SovdConfig {
 impl Default for EcuConfig {
     fn default() -> Self {
         Self {
-            default_name: "ECU".to_string(),
+            default_name: DEFAULT_ECU_NAME.to_string(),
             logical_address: 0x0001,
             eid: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
             gid: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],

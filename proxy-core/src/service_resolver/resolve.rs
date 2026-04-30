@@ -15,21 +15,49 @@
 //! Resolves incoming UDS DID values to the correct MDD service name
 //! using prefix lookup, request parameter metadata, and encoding probes.
 
-use cda_core::EcuManager as InnerManager;
+use cda_core::EcuManager as CdaEcuManager;
 use cda_interfaces::{
     DynamicPlugin, EcuManager as EcuManagerTrait, HashMap, ServiceParameterMetadata,
     diagservices::{DiagServiceResponse, UdsPayloadData},
-    service_ids,
 };
 use cda_plugin_security::DefaultSecurityPluginData;
 
 use super::{
-    CdaEcuManager,
+    ManagerHandle,
     uds_helpers::{
         did_matches_compu_scales, extract_did_from_uds, find_did_param, make_diag_comm,
         make_service_payload, parse_u64_literal,
     },
+    uds_service_ids,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceType {
+    /// `ReadDataByIdentifier` (SID 0x22).
+    Read,
+    /// `WriteDataByIdentifier` (SID 0x2E).
+    Write,
+}
+
+impl ServiceType {
+    /// UDS service identifier byte.
+    #[must_use]
+    pub fn sid(self) -> u8 {
+        match self {
+            Self::Read => uds_service_ids::READ_DATA_BY_IDENTIFIER,
+            Self::Write => uds_service_ids::WRITE_DATA_BY_IDENTIFIER,
+        }
+    }
+
+    /// Human-readable label for log messages.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Read => "READ",
+            Self::Write => "WRITE",
+        }
+    }
+}
 
 /// Successful result of DID-to-service resolution.
 pub struct ResolvedService {
@@ -41,62 +69,32 @@ pub struct ResolvedService {
 }
 
 /// Resolves UDS DID values to MDD service names.
-///
-/// Obtain an instance via
-/// [`ServiceResolver::did_resolver()`](super::ServiceResolver::did_resolver).
-#[derive(Clone)]
 pub struct DidResolver {
-    manager: CdaEcuManager,
+    manager: ManagerHandle,
 }
 
 impl DidResolver {
-    pub(super) fn new(manager: CdaEcuManager) -> Self {
+    /// Create a new resolver backed by the given manager handle.
+    pub fn new(manager: ManagerHandle) -> Self {
         Self { manager }
     }
 
-    /// Resolve the best-matching READ service for the given DID and raw UDS bytes.
-    pub async fn resolve_read_service(
+    /// Resolve the best-matching service for a UDS DID request.
+    pub async fn resolve(
         &self,
+        service_type: ServiceType,
         did: u16,
         uds_bytes: &[u8],
     ) -> Option<ResolvedService> {
-        self.resolve_service(service_ids::READ_DATA_BY_IDENTIFIER, did, uds_bytes, "READ")
-            .await
-    }
-
-    /// Resolve the best-matching WRITE service for the given DID and raw UDS bytes.
-    pub async fn resolve_write_service(
-        &self,
-        did: u16,
-        uds_bytes: &[u8],
-    ) -> Option<ResolvedService> {
-        self.resolve_service(
-            service_ids::WRITE_DATA_BY_IDENTIFIER,
-            did,
-            uds_bytes,
-            "WRITE",
-        )
-        .await
-    }
-
-    /// Find the correct service for a given SID + DID.
-    ///
-    /// Delegates DID matching to `resolve_service_did`, then attempts
-    /// parse-validation via `convert_request_from_uds`.
-    async fn resolve_service(
-        &self,
-        sid: u8,
-        did: u16,
-        uds_bytes: &[u8],
-        label: &str,
-    ) -> Option<ResolvedService> {
+        let sid = service_type.sid();
+        let label = service_type.label();
         tracing::debug!("[MDD] {} DID 0x{:04X}", label, did);
 
-        let service_name = self.resolve_service_did(sid, did, uds_bytes, label).await?;
+        let service_name = self.resolve_service_did(sid, did, label).await?;
 
         // Attempt parse-validation to extract structured parameter data.
         let manager = self.manager.read().await;
-        let payload = make_service_payload(uds_bytes);
+        let payload: cda_interfaces::ServicePayload = make_service_payload(uds_bytes);
         let diag_comm = make_diag_comm(&service_name, sid);
 
         if let Ok(parsed) = manager
@@ -138,13 +136,7 @@ impl DidResolver {
     // `did` is `u16`; `did >> 8` is at most 0xFF and `did & 0xFF` is at most 0xFF,
     // so both narrowing casts to `u8` are safe and can never truncate.
     #[allow(clippy::cast_possible_truncation)]
-    async fn resolve_service_did(
-        &self,
-        sid: u8,
-        did: u16,
-        _uds_bytes: &[u8],
-        label: &str,
-    ) -> Option<String> {
+    async fn resolve_service_did(&self, sid: u8, did: u16, label: &str) -> Option<String> {
         let manager = self.manager.read().await;
 
         // Step 1 + 2: prefix lookup and candidate list construction.
@@ -153,7 +145,7 @@ impl DidResolver {
 
         // Step 3: match DID against each candidate's request metadata.
         for name in &candidates {
-            if self.match_candidate_did(&manager, name, sid, did).await {
+            if Self::match_candidate_did(&manager, name, sid, did).await {
                 tracing::info!("[resolve_did] {} DID 0x{:04X} -> '{}'", label, did, name);
                 return Some(name.clone());
             }
@@ -173,7 +165,7 @@ impl DidResolver {
     /// Returns `Some` with a single-element vec on a unique prefix match
     /// (fast path). Returns `None` when no candidates exist.
     fn build_did_candidates(
-        manager: &InnerManager<DefaultSecurityPluginData>,
+        manager: &CdaEcuManager<DefaultSecurityPluginData>,
         did_prefix: [u8; 3],
         sid: u8,
         did: u16,
@@ -210,19 +202,19 @@ impl DidResolver {
         }
 
         let security_plugin: DynamicPlugin = Box::new(());
-        let extra_names: Vec<String> = match sid {
-            service_ids::READ_DATA_BY_IDENTIFIER => manager
+        let extra_names: Vec<String> = if sid == uds_service_ids::READ_DATA_BY_IDENTIFIER {
+            manager
                 .get_components_data_info(&security_plugin)
                 .into_iter()
                 .map(|c| c.id)
-                .collect(),
-            service_ids::WRITE_DATA_BY_IDENTIFIER => manager
+                .collect()
+        } else if sid == uds_service_ids::WRITE_DATA_BY_IDENTIFIER {
+            manager
                 .get_components_configurations_info(&security_plugin)
+                .map(|v| v.into_iter().map(|c| c.id).collect())
                 .unwrap_or_default()
-                .into_iter()
-                .map(|c| c.id)
-                .collect(),
-            _ => Vec::new(),
+        } else {
+            Vec::new()
         };
         for name in extra_names {
             if !candidates.contains(&name) {
@@ -251,10 +243,9 @@ impl DidResolver {
         Some(candidates)
     }
 
-    /// Check whether `candidate_name` matches `did` via request parameter metadata.
+    /// Check if `candidate_name` matches `did` via request parameter metadata.
     async fn match_candidate_did(
-        &self,
-        manager: &InnerManager<DefaultSecurityPluginData>,
+        manager: &CdaEcuManager<DefaultSecurityPluginData>,
         candidate_name: &str,
         sid: u8,
         did: u16,
@@ -303,7 +294,7 @@ impl DidResolver {
 
     /// Probe a service DID via request encoding for symbolic PHYS-CONST cases.
     async fn probe_service_did(
-        manager: &InnerManager<DefaultSecurityPluginData>,
+        manager: &CdaEcuManager<DefaultSecurityPluginData>,
         service_name: &str,
         sid: u8,
         params: &[ServiceParameterMetadata],
@@ -356,11 +347,10 @@ impl DidResolver {
 
 #[cfg(test)]
 mod tests {
-    use cda_interfaces::service_ids;
-
-    use super::super::uds_helpers::{did_matches_compu_scales, find_did_param, parse_u64_literal};
-
-    /// `parse_u64_literal` parses decimal and hexadecimal strings.
+    use super::super::{
+        uds_helpers::{did_matches_compu_scales, find_did_param, parse_u64_literal},
+        uds_service_ids,
+    };
     #[test]
     fn test_parse_u64_literal_decimal() {
         assert_eq!(parse_u64_literal("0"), Some(0));
@@ -371,7 +361,6 @@ mod tests {
     fn test_parse_u64_literal_hex() {
         assert_eq!(parse_u64_literal("0xF103"), Some(0xF103));
         assert_eq!(parse_u64_literal("0XFF"), Some(0xFF));
-        // bare hex fallback (no prefix)
         assert_eq!(parse_u64_literal("F103"), Some(0xF103));
     }
 
@@ -381,7 +370,6 @@ mod tests {
         assert_eq!(parse_u64_literal("abc xyz"), None);
     }
 
-    /// `did_matches_compu_scales` returns true when DID falls in any range.
     #[test]
     fn test_did_matches_compu_scales_in_range() {
         use cda_interfaces::CompuScaleInfo;
@@ -397,44 +385,88 @@ mod tests {
         assert!(!did_matches_compu_scales(&scales, 0xF200));
     }
 
-    /// `find_did_param` skips the SID `CodedConst` and returns the next parameter.
     #[test]
     fn test_find_did_param_skips_sid() {
         use cda_interfaces::{ParameterTypeMetadata, ServiceParameterMetadata};
-        let sid = service_ids::READ_DATA_BY_IDENTIFIER; // 0x22
+        let sid = uds_service_ids::READ_DATA_BY_IDENTIFIER;
         let meta = vec![
             ServiceParameterMetadata {
                 name: "SID".to_string(),
                 semantic: None,
                 param_type: ParameterTypeMetadata::CodedConst {
-                    coded_value: "34".to_string(), // 0x22
+                    coded_value: "34".to_string(),
                 },
             },
             ServiceParameterMetadata {
                 name: "DID".to_string(),
                 semantic: Some("DATA-IDENTIFIER".to_string()),
                 param_type: ParameterTypeMetadata::CodedConst {
-                    coded_value: "61824".to_string(), // 0xF190
+                    coded_value: "61824".to_string(),
                 },
             },
         ];
-        let param = find_did_param(&meta, sid);
-        assert!(param.is_some());
-        assert_eq!(param.unwrap().name, "DID");
+        let did_param = find_did_param(&meta, sid);
+        assert!(did_param.is_some());
+        assert_eq!(did_param.unwrap().name, "DID");
     }
 
-    /// `find_did_param` returns `None` when no DID parameter is present.
     #[test]
-    fn test_find_did_param_none_when_only_sid() {
+    fn test_service_type_sid() {
+        assert_eq!(super::ServiceType::Read.sid(), 0x22);
+        assert_eq!(super::ServiceType::Write.sid(), 0x2E);
+    }
+
+    #[test]
+    fn test_service_type_label() {
+        assert_eq!(super::ServiceType::Read.label(), "READ");
+        assert_eq!(super::ServiceType::Write.label(), "WRITE");
+    }
+
+    #[test]
+    fn test_find_did_param_phys_const() {
         use cda_interfaces::{ParameterTypeMetadata, ServiceParameterMetadata};
-        let sid = service_ids::READ_DATA_BY_IDENTIFIER;
+        let sid = uds_service_ids::READ_DATA_BY_IDENTIFIER;
+        let meta = vec![
+            ServiceParameterMetadata {
+                name: "SID".to_string(),
+                semantic: None,
+                param_type: ParameterTypeMetadata::CodedConst {
+                    coded_value: "34".to_string(),
+                },
+            },
+            ServiceParameterMetadata {
+                name: "DID".to_string(),
+                semantic: None,
+                param_type: ParameterTypeMetadata::PhysConst {
+                    phys_constant_value: "VIN".to_string(),
+                    coded_value: Some(0xF190),
+                },
+            },
+        ];
+        let did_param = find_did_param(&meta, sid);
+        assert!(did_param.is_some());
+        assert_eq!(did_param.unwrap().name, "DID");
+    }
+
+    #[test]
+    fn test_find_did_param_no_sid_match() {
+        use cda_interfaces::{ParameterTypeMetadata, ServiceParameterMetadata};
         let meta = vec![ServiceParameterMetadata {
-            name: "SID".to_string(),
+            name: "ONLY_PARAM".to_string(),
             semantic: None,
-            param_type: ParameterTypeMetadata::CodedConst {
-                coded_value: "34".to_string(),
+            param_type: ParameterTypeMetadata::PhysConst {
+                phys_constant_value: "VALUE".to_string(),
+                coded_value: None,
             },
         }];
-        assert!(find_did_param(&meta, sid).is_none());
+        let did_param = find_did_param(&meta, 0x22);
+        assert!(did_param.is_some());
+        assert_eq!(did_param.unwrap().name, "ONLY_PARAM");
+    }
+
+    #[test]
+    fn test_find_did_param_empty_metadata() {
+        let meta: Vec<cda_interfaces::ServiceParameterMetadata> = vec![];
+        assert!(find_did_param(&meta, 0x22).is_none());
     }
 }

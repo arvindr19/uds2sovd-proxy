@@ -12,11 +12,8 @@
 
 //! UDS response building and validation.
 //!
-//! [`ResponseEncoder`] encodes SOVD JSON data into UDS response bytes using
-//! MDD parameter metadata. It depends on [`MetadataProvider`] for enriched
-//! response metadata queries.
-
-use std::sync::Arc;
+//! [`ResponseEncoder`] encodes SOVD JSON data into UDS response bytes
+//! using MDD parameter metadata.
 
 use cda_interfaces::{
     DiagServiceError, EcuManager as EcuManagerTrait, HashMap, UDS_ID_RESPONSE_BITMASK,
@@ -24,7 +21,7 @@ use cda_interfaces::{
 };
 
 use super::{
-    CdaEcuManager, MetadataProvider, UDS_POSITIVE_RESPONSE_MIN_SIZE,
+    ManagerHandle, MetadataProvider, UDS_POSITIVE_RESPONSE_MIN_SIZE,
     uds_helpers::{
         encode_unsigned_be, encode_value_at, find_mux_case_prefix, make_diag_comm,
         make_service_payload, value_to_bytes,
@@ -32,15 +29,14 @@ use super::{
 };
 
 /// Encodes SOVD JSON data into UDS response bytes using MDD metadata.
-#[derive(Clone)]
 pub struct ResponseEncoder {
-    manager: CdaEcuManager,
+    manager: ManagerHandle,
     metadata: MetadataProvider,
 }
 
 impl ResponseEncoder {
-    pub(super) fn new(manager: CdaEcuManager) -> Self {
-        let metadata = MetadataProvider::new(Arc::clone(&manager));
+    /// Create a new response encoder.
+    pub fn new(manager: ManagerHandle, metadata: MetadataProvider) -> Self {
         Self { manager, metadata }
     }
 

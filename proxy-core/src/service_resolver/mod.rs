@@ -15,18 +15,15 @@
 //! `ServiceResolver` is a thin facade that owns the CDA `EcuManager` and
 //! exposes three focused sub-components via accessor methods:
 //!
-//! - [`DidResolver`] -- DID-to-service resolution
-//! - [`ResponseEncoder`] -- UDS response encoding
-//! - [`MetadataProvider`] -- MDD parameter queries
 
-mod metadata;
-mod resolve;
-mod response;
+pub(crate) mod metadata;
+pub(crate) mod resolve;
+pub(crate) mod response;
 pub mod uds_helpers;
 
 use std::sync::Arc;
 
-use cda_core::{DiagServiceResponseStruct, EcuManager};
+use cda_core::{DiagServiceResponseStruct, EcuManager as CdaEcuManager};
 use cda_database::datatypes::DiagnosticDatabase;
 use cda_interfaces::{
     DiagComm, DiagCommType, DiagServiceError, EcuManager as EcuManagerTrait, EcuManagerType,
@@ -36,24 +33,63 @@ use cda_interfaces::{
 };
 use cda_plugin_security::DefaultSecurityPluginData;
 pub use metadata::MetadataProvider;
-pub use resolve::{DidResolver, ResolvedService};
+pub use resolve::{DidResolver, ResolvedService, ServiceType};
 pub use response::ResponseEncoder;
 use tokio::sync::RwLock;
-pub use uds_helpers::{
-    UdsResponse, find_mux_case_prefix, has_mux_case_for_did_exact, parse_mux_coded_value,
-};
+pub use uds_helpers::find_mux_case_prefix;
 
-pub(crate) type CdaEcuManager = Arc<RwLock<EcuManager<DefaultSecurityPluginData>>>;
-
-/// Minimum UDS negative response length: 0x7F + SID + NRC.
-const UDS_NEGATIVE_RESPONSE_MIN_LEN: usize = 3;
+pub(crate) type ManagerHandle = Arc<RwLock<CdaEcuManager<DefaultSecurityPluginData>>>;
 
 /// Minimum UDS positive response buffer size: response SID (1) + DID high (1) + DID low (1).
-const UDS_POSITIVE_RESPONSE_MIN_SIZE: usize = 3;
+pub(crate) const UDS_POSITIVE_RESPONSE_MIN_SIZE: usize = 3;
 
-#[derive(Clone)]
+/// UDS Service Identifiers (SIDs) for diagnostic services.
+///
+/// Proxy-level definitions independent of CDA library.
+pub mod uds_service_ids {
+    /// Session Control
+    pub const SESSION_CONTROL: u8 = 0x10;
+    /// ECU Reset
+    pub const ECU_RESET: u8 = 0x11;
+    /// Clear Diagnostic Information
+    pub const CLEAR_DIAGNOSTIC_INFORMATION: u8 = 0x14;
+    /// Read DTC Information
+    pub const READ_DTC_INFORMATION: u8 = 0x19;
+    /// Read Data By Identifier
+    pub const READ_DATA_BY_IDENTIFIER: u8 = 0x22;
+    /// Security Access
+    pub const SECURITY_ACCESS: u8 = 0x27;
+    /// Communication Control
+    pub const COMMUNICATION_CONTROL: u8 = 0x28;
+    /// Authentication
+    pub const AUTHENTICATION: u8 = 0x29;
+    /// Write Data By Identifier
+    pub const WRITE_DATA_BY_IDENTIFIER: u8 = 0x2E;
+    /// Input/Output Control By Identifier
+    pub const INPUT_OUTPUT_CONTROL_BY_IDENTIFIER: u8 = 0x2F;
+    /// Routine Control
+    pub const ROUTINE_CONTROL: u8 = 0x31;
+    /// Request Download
+    pub const REQUEST_DOWNLOAD: u8 = 0x34;
+    /// Transfer Data
+    pub const TRANSFER_DATA: u8 = 0x36;
+    /// Request Transfer Exit
+    pub const REQUEST_TRANSFER_EXIT: u8 = 0x37;
+    /// Tester Present
+    pub const TESTER_PRESENT: u8 = 0x3E;
+    /// Control DTC Setting
+    pub const CONTROL_DTC_SETTING: u8 = 0x85;
+    /// Negative Response
+    pub const NEGATIVE_RESPONSE: u8 = 0x7F;
+}
+
 pub struct ServiceResolver {
-    manager: CdaEcuManager,
+    /// DID-to-service resolution.
+    pub resolver: DidResolver,
+    /// UDS response encoding from SOVD JSON data.
+    pub encoder: ResponseEncoder,
+    /// MDD metadata queries (request/response parameter info, MUX cases).
+    pub metadata: MetadataProvider,
     ecu_name: String,
 }
 
@@ -79,7 +115,7 @@ impl ServiceResolver {
             protocol_case_sensitive: false,
         };
 
-        let mut manager = EcuManager::new(
+        let mut manager = CdaEcuManager::new(
             db,
             Protocol::DoIp,
             &com_params,
@@ -95,34 +131,15 @@ impl ServiceResolver {
 
         Self::activate_base_variant(&mut manager).await?;
 
+        let handle: ManagerHandle = Arc::new(RwLock::new(manager));
+
+        let metadata = MetadataProvider::new(Arc::clone(&handle));
         Ok(Self {
-            manager: Arc::new(RwLock::new(manager)),
+            resolver: DidResolver::new(Arc::clone(&handle)),
+            encoder: ResponseEncoder::new(Arc::clone(&handle), metadata.clone()),
+            metadata,
             ecu_name,
         })
-    }
-
-    /// Return a [`DidResolver`] for DID-to-service resolution.
-    #[must_use]
-    pub fn did_resolver(&self) -> DidResolver {
-        DidResolver::new(Arc::clone(&self.manager))
-    }
-
-    /// Return a [`ResponseEncoder`] for building UDS response bytes.
-    #[must_use]
-    pub fn response_encoder(&self) -> ResponseEncoder {
-        ResponseEncoder::new(Arc::clone(&self.manager))
-    }
-
-    /// Return a [`MetadataProvider`] for MDD parameter queries.
-    #[must_use]
-    pub fn metadata(&self) -> MetadataProvider {
-        MetadataProvider::new(Arc::clone(&self.manager))
-    }
-
-    /// ECU name as configured at construction time.
-    #[must_use]
-    pub fn ecu_name(&self) -> &str {
-        &self.ecu_name
     }
 
     /// Activate the base (fallback) ECU variant.
@@ -147,7 +164,7 @@ impl ServiceResolver {
     /// Returns `DiagServiceError` when `detect_variant` fails and no
     /// variant name was set.
     async fn activate_base_variant(
-        manager: &mut EcuManager<DefaultSecurityPluginData>,
+        manager: &mut CdaEcuManager<DefaultSecurityPluginData>,
     ) -> Result<(), DiagServiceError> {
         // TODO(#16): replace with real variant-identification DID reads.
         let dummy_response = DiagServiceResponseStruct {
@@ -180,7 +197,12 @@ impl ServiceResolver {
             })
     }
 
-    /// Build default `DoIP` communication parameters for the given addresses.
+    /// Get ECU name.
+    #[must_use]
+    pub fn ecu_name(&self) -> &str {
+        &self.ecu_name
+    }
+
     fn default_com_params(logical_address: u16, tester_address: u16) -> ComParams {
         let mut com_params = ComParams::default();
         com_params.doip.logical_gateway_address.default = logical_address;
@@ -193,51 +215,6 @@ impl ServiceResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_is_negative_response() {
-        assert!(!UdsResponse::new(&[0x62, 0xF1, 0x90]).is_negative());
-        assert!(!UdsResponse::new(&[0x50, 0x01]).is_negative());
-        assert!(UdsResponse::new(&[0x7F, 0x22, 0x31]).is_negative());
-        assert!(!UdsResponse::new(&[0x7F]).is_negative());
-        assert!(!UdsResponse::new(&[0x7F, 0x22]).is_negative());
-    }
-
-    #[test]
-    fn test_get_nrc() {
-        assert_eq!(UdsResponse::new(&[0x62, 0xF1, 0x90]).nrc(), None);
-        assert_eq!(UdsResponse::new(&[0x7F, 0x22, 0x31]).nrc(), Some(0x31));
-        assert_eq!(UdsResponse::new(&[0x7F, 0x10, 0x11]).nrc(), Some(0x11));
-        assert_eq!(UdsResponse::new(&[0x7F, 0x22, 0x22]).nrc(), Some(0x22));
-        assert_eq!(UdsResponse::new(&[0x7F]).nrc(), None);
-        assert_eq!(UdsResponse::new(&[0x7F, 0x22]).nrc(), None);
-    }
-
-    #[test]
-    fn test_nrc_codes() {
-        let cases: &[(u8, u8, u8)] = &[
-            (0x22, 0x11, 0x11),
-            (0x22, 0x12, 0x12),
-            (0x22, 0x13, 0x13),
-            (0x22, 0x22, 0x22),
-            (0x22, 0x31, 0x31),
-            (0x27, 0x33, 0x33),
-            (0x27, 0x35, 0x35),
-            (0x22, 0x78, 0x78),
-        ];
-        for &(sid, nrc, expected) in cases {
-            assert_eq!(UdsResponse::new(&[0x7F, sid, nrc]).nrc(), Some(expected));
-        }
-    }
-
-    #[test]
-    fn test_positive_response_sids() {
-        assert!(!UdsResponse::new(&[0x50, 0x01, 0x00, 0x32]).is_negative());
-        assert!(!UdsResponse::new(&[0x62, 0xF1, 0x90, 0x57]).is_negative());
-        assert!(!UdsResponse::new(&[0x67, 0x01, 0x12, 0x34]).is_negative());
-        assert!(!UdsResponse::new(&[0x6E, 0xF1, 0x90]).is_negative());
-        assert!(!UdsResponse::new(&[0x7E, 0x00]).is_negative());
-    }
 
     #[test]
     fn test_default_com_params() {
@@ -257,11 +234,5 @@ mod tests {
             com_params.doip.logical_response_id_table_name,
             "CP_UniqueRespIdTable"
         );
-    }
-
-    #[test]
-    fn test_empty_response() {
-        assert!(!UdsResponse::new(&[]).is_negative());
-        assert_eq!(UdsResponse::new(&[]).nrc(), None);
     }
 }

@@ -10,22 +10,25 @@
  * https://www.apache.org/licenses/LICENSE-2.0
  */
 
-//! MDD metadata queries for service parameters, response layouts, and MUX cases.
+//! Service metadata queries and lookup.
+//!
+//! [`MetadataProvider`] queries request/response parameter metadata from the
+//! MDD, looks up services by SID, and retrieves MUX case information.
 
 use cda_interfaces::{
     DiagServiceError, DynamicPlugin, EcuManager as EcuManagerTrait, MuxCaseInfo,
-    ServiceParameterMetadata, service_ids,
+    ServiceParameterMetadata,
 };
 
-use super::{CdaEcuManager, uds_helpers::has_mux_case_for_did_exact};
+use super::{ManagerHandle, uds_helpers::has_mux_case_for_did_exact, uds_service_ids};
 
 #[derive(Clone)]
 pub struct MetadataProvider {
-    manager: CdaEcuManager,
+    manager: ManagerHandle,
 }
 
 impl MetadataProvider {
-    pub(super) fn new(manager: CdaEcuManager) -> Self {
+    pub fn new(manager: ManagerHandle) -> Self {
         Self { manager }
     }
 
@@ -35,7 +38,7 @@ impl MetadataProvider {
     ///
     /// Returns `DiagServiceError` when the service is unknown or the MDD
     /// does not contain request metadata.
-    pub async fn get_service_parameter_metadata(
+    pub async fn get_request_params(
         &self,
         service_name: &str,
     ) -> Result<Vec<ServiceParameterMetadata>, DiagServiceError> {
@@ -49,7 +52,7 @@ impl MetadataProvider {
     ///
     /// Returns `DiagServiceError` when the service is unknown or no response
     /// metadata exists.
-    pub async fn get_response_parameter_metadata(
+    pub async fn get_response_params(
         &self,
         service_name: &str,
     ) -> Result<Vec<cda_interfaces::ResponseParameterInfo>, DiagServiceError> {
@@ -97,12 +100,12 @@ impl MetadataProvider {
         let manager = self.manager.read().await;
         let security_plugin: DynamicPlugin = Box::new(());
         let names = match sid {
-            service_ids::READ_DATA_BY_IDENTIFIER => manager
+            uds_service_ids::READ_DATA_BY_IDENTIFIER => manager
                 .get_components_data_info(&security_plugin)
                 .into_iter()
                 .map(|c| c.id)
                 .collect(),
-            service_ids::WRITE_DATA_BY_IDENTIFIER => manager
+            uds_service_ids::WRITE_DATA_BY_IDENTIFIER => manager
                 .get_components_configurations_info(&security_plugin)
                 .unwrap_or_default()
                 .into_iter()
@@ -132,7 +135,7 @@ impl MetadataProvider {
 
     /// Retrieve enriched POS-RESPONSE metadata with the source service name.
     ///
-    /// Same as [`get_enriched_response_metadata`](Self::get_enriched_response_metadata)
+    /// Same as [`MetadataProvider::get_enriched_response_metadata`]
     /// but also returns the name of the service that actually provided the
     /// metadata.  When the response is "opaque" (single STRUCTURE ref) and a
     /// MUX-based sibling is used, the returned name is the sibling -- callers

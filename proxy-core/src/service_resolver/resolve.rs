@@ -136,7 +136,12 @@ impl DidResolver {
     // `did` is `u16`; `did >> 8` is at most 0xFF and `did & 0xFF` is at most 0xFF,
     // so both narrowing casts to `u8` are safe and can never truncate.
     #[allow(clippy::cast_possible_truncation)]
-    async fn resolve_service_did(&self, sid: u8, did: u16, label: &str) -> Option<String> {
+    async fn resolve_service_did(
+        &self,
+        sid: u8,
+        did: u16,
+        label: &str,
+    ) -> Option<String> {
         let manager = self.manager.read().await;
 
         // Step 1 + 2: prefix lookup and candidate list construction.

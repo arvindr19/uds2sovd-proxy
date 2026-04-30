@@ -11,13 +11,12 @@
  */
 
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use cda_database::{datatypes::DiagnosticDatabase, load_ecudata};
-use cda_interfaces::datatypes::FlatbBufConfig;
+use cda_interfaces::{HashMap, datatypes::FlatbBufConfig};
 use clap::Parser;
 use proxy_core::{Config, Result, ServiceResolver, error::ProxyError};
 use proxy_doip::DoIpServer;
@@ -91,7 +90,7 @@ async fn main() -> Result<()> {
     .await
     .map_err(|e| ProxyError::Mdd(format!("Failed to create ServiceResolver: {e}")))?;
 
-    let ecu_managers = Arc::new(HashMap::from([(ecu_name, manager)]));
+    let ecu_managers = Arc::new(HashMap::from_iter([(ecu_name, manager)]));
     info!(
         "ServiceResolver ready for ECU '{}'",
         config.ecu.default_name
@@ -100,7 +99,7 @@ async fn main() -> Result<()> {
     // Create SOVD client, mapper, and diagnostic handler
     let sovd_client = SovdClient::new(config.sovd.clone())
         .map_err(|e| ProxyError::Config(format!("Failed to create SOVD client: {e}")))?;
-    let sovd_mapper = SovdMapper::new((*config).clone(), sovd_client);
+    let sovd_mapper = SovdMapper::new(&config, sovd_client);
     let diag_handler = Arc::new(SovdDiagHandler::new(
         Arc::clone(&config),
         sovd_mapper,

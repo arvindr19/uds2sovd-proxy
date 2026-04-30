@@ -121,6 +121,14 @@ impl SovdClient {
         Ok(auth_resp.access_token)
     }
 
+    /// Return a cached access token, or fetch a fresh one by calling [`authenticate`].
+    ///
+    /// The token is stored in a shared read-write lock so concurrent requests
+    /// can read it without blocking each other. A new token is only requested
+    /// when the cache is empty.
+    ///
+    /// # Errors
+    /// Propagates any error returned by [`authenticate`].
     // TODO(sovd-server): token cache helper - only called from the read_data / write_data
     // paths that are bypassed when mock_gateway = true.
     async fn get_token(&self) -> Result<String> {
@@ -361,6 +369,8 @@ impl SovdClient {
     ///
     /// Uses a fixed conservative size (4 bytes of zeros) that satisfies the
     /// MDD response encoder without assuming any ECU-specific layout.
+    /// Return a fixed-size opaque byte array for services whose response
+    /// layout cannot be inferred from metadata
     fn mock_opaque_payload(_did: u16) -> Value {
         const DEFAULT_OPAQUE_SIZE: usize = 4;
         Value::Array(vec![Value::Number(0.into()); DEFAULT_OPAQUE_SIZE])

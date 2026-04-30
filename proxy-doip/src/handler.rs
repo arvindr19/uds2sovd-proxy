@@ -224,6 +224,9 @@ impl ConnectionHandler {
         Ok(())
     }
 
+    /// Dispatch an incoming `DoIP` frame to the correct handler based on
+    /// its payload type.
+
     async fn process_message(&mut self, msg: &DoIpMessage) -> Result<()> {
         let payload_type = msg.payload_type_enum();
         debug!(
@@ -249,6 +252,10 @@ impl ConnectionHandler {
         }
     }
 
+    /// Parses the source address from the request, activates the session,
+    /// and replies with a `RoutingActivationResponse` (0x0006) signalling
+    /// success. Any subsequent diagnostic messages are only accepted from
+    /// the address recorded here.
     async fn handle_routing_activation(&mut self, msg: &DoIpMessage) -> Result<()> {
         let Some(req) = RoutingActivationRequest::from_payload(&msg.payload) else {
             warn!("Invalid routing activation request");
@@ -272,6 +279,12 @@ impl ConnectionHandler {
         Ok(())
     }
 
+    /// Handle an ISO 13400 `DiagnosticMessage` (0x8001).
+    /// The UDS payload is forwarded to [`process_uds_request`] and the resulting
+    /// response is wrapped backinto a `DiagnosticMessage` and sent to the tester.
+    ///
+    /// # Errors
+    /// Returns an error if sending the diagnostic response fails.
     async fn handle_diagnostic_message(&mut self, msg: &DoIpMessage) -> Result<()> {
         if !self.session.is_activated() {
             warn!("Received diagnostic message before routing activation");
@@ -329,6 +342,14 @@ impl ConnectionHandler {
         Ok(())
     }
 
+    /// Route a raw UDS byte slice to the appropriate service handler.
+    ///
+    /// Validates the minimum length, parses the SID, and dispatches to
+    /// `ReadDataByIdentifier` (0x22) or `WriteDataByIdentifier` (0x2E).
+    /// Unsupported SIDs get a `ServiceNotSupported` negative response.
+    /// For now - Never returns an error - all failures are encoded as UDS negative
+    /// responses so the `DoIP` transport always gets a reply.
+    /// TODO: Handle errors and return the errors caused
     async fn process_uds_request(&self, uds_data: &[u8]) -> Vec<u8> {
         // All supported services require at least SID (1) + DID high (1) + DID low (1).
         if uds_data.len() < MIN_READ_SERVICE_LENGTH {
@@ -386,6 +407,11 @@ impl ConnectionHandler {
         }
     }
 
+    /// Execute a `WriteDataByIdentifier` (0x2E)
+    ///
+    /// Extracts the DID, rebuilds the full UDS frame with the SID prepended,
+    /// and delegates to `SovdDiagHandler`. Returns a positive 3-byte response
+    /// on success or a negative response on any failure.
     async fn process_write_data_by_identifier(&self, uds_msg: &UdsMessage) -> Vec<u8> {
         if uds_msg.data.len() < MIN_WDBI_DATA_LENGTH {
             error!("Invalid write request - missing DID or data");
@@ -415,6 +441,11 @@ impl ConnectionHandler {
         }
     }
 
+    /// Execute a `ReadDataByIdentifier` (0x22)
+    ///
+    /// Extracts the DID, rebuilds the full UDS frame with the SID prepended,
+    /// and delegates to `SovdDiagHandler`. Returns the encoded MDD-driven
+    /// response bytes on success or a negative response on failure.
     async fn process_read_data_by_identifier(&self, uds_msg: &UdsMessage) -> Vec<u8> {
         if uds_msg.data.len() < MIN_RDBI_DATA_LENGTH {
             error!("Invalid read request - missing DID");
@@ -444,6 +475,10 @@ impl ConnectionHandler {
         }
     }
 
+    /// Serialise a `DoIP` message and write it to the TCP stream.
+    ///
+    /// # Errors
+    /// Returns an error if the write or flush fails.
     async fn send_message(&mut self, msg: &DoIpMessage) -> Result<()> {
         let bytes = msg.to_bytes();
         self.stream.write_all(&bytes).await?;

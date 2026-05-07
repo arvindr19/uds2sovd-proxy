@@ -34,12 +34,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Format and Clippy - Nightly toolchain pinned
-        uses: eclipse-opensovd/cicd-workflows/rust-lint-and-format-action@59d86655e1e790d8c44f7e7dd5c295d7a968cc27
         with:
           submodules: false
       - name: Format and Clippy - Stable toolchain
-        uses: eclipse-opensovd/cicd-workflows/rust-lint-and-format-action@b90aee53ba1739e08f7991d24241b23903a8c11a
+        uses: eclipse-opensovd/cicd-workflows/rust-lint-and-format-action@59d86655e1e790d8c44f7e7dd5c295d7a968cc27
         with:
           toolchain: 1.88.0
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -50,7 +48,7 @@ jobs:
           rustfmt-enable-reviewdog: "false"
           error-on-unformatted: "false"
       - name: Format and Clippy - Nightly toolchain pinned
-        uses: eclipse-opensovd/cicd-workflows/rust-lint-and-format-action@b90aee53ba1739e08f7991d24241b23903a8c11a
+        uses: eclipse-opensovd/cicd-workflows/rust-lint-and-format-action@59d86655e1e790d8c44f7e7dd5c295d7a968cc27
         with:
           toolchain: nightly-2025-07-14
           github-token: ${{ secrets.GITHUB_TOKEN }}

@@ -12,33 +12,17 @@
 
 use std::{
     net::{IpAddr, Ipv4Addr},
-    path::Path,
+    path::PathBuf,
 };
 
+use clap::Parser;
 use serde::{Deserialize, Deserializer, de};
+use url::Url;
 
 use crate::error::{ProxyError, Result};
 
-/// Required byte length for EID and GID fields per ISO 13400-2.
-const EID_GID_BYTE_LENGTH: usize = 6;
-
-// Default values for ServerConfig.
-const DEFAULT_DOIP_PORT: u16 = 13400;
-const DEFAULT_MAX_CONNECTIONS: usize = 10;
-/// DoIP source address (tester logical address used in response messages).
-const DEFAULT_SOURCE_ADDRESS: u16 = 0x0E80;
-
-// Default values for SovdConfig.
-const DEFAULT_GATEWAY_URL: &str = "http://localhost:20002";
-const DEFAULT_CLIENT_ID: &str = "uds2sovd_proxy";
-const DEFAULT_CLIENT_SECRET: &str = "test_secret";
-const DEFAULT_TIMEOUT_MS: u64 = 5000;
-const DEFAULT_API_VERSION: &str = "v15";
-
-// Default values for EcuConfig.
-const DEFAULT_ECU_NAME: &str = "ECU";
-/// Top-level proxy configuration loaded from a TOML file.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct Config {
     /// `DoIP` server settings (port, bind address, source address).
     pub server: ServerConfig,
@@ -50,21 +34,31 @@ pub struct Config {
     pub logging: LoggingConfig,
 }
 
-/// `DoIP` server configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Deserialize)]
+#[serde(default)]
 pub struct ServerConfig {
-    /// TCP port for the `DoIP` server (default: 13400).
+    /// TCP port for the `DoIP` server (default: 13 400).
     #[serde(deserialize_with = "deserialize_nonzero_u16")]
     pub doip_port: u16,
-    /// IP address to bind the server socket to.
-    #[serde(deserialize_with = "deserialize_ip_addr")]
+    /// IP address to bind the server socket to (default: `0.0.0.0`).
     pub bind_address: IpAddr,
-    /// Maximum number of concurrent connections.
+    /// Maximum number of concurrent connections (default: 10).
     #[serde(deserialize_with = "deserialize_max_connections")]
     pub max_connections: usize,
-    /// `DoIP` source address used in response messages.
+    /// `DoIP` source address used in response messages (default: `0x0E80`).
     #[serde(deserialize_with = "deserialize_nonzero_u16")]
     pub source_address: u16,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            doip_port: 13_400,
+            bind_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            max_connections: 10,
+            source_address: 0x0E80,
+        }
+    }
 }
 
 fn deserialize_nonzero_u16<'de, D: Deserializer<'de>>(
@@ -77,16 +71,6 @@ fn deserialize_nonzero_u16<'de, D: Deserializer<'de>>(
     Ok(v)
 }
 
-/// Deserialize IP address string into `std::net::IpAddr`.
-fn deserialize_ip_addr<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<IpAddr, D::Error> {
-    let s = String::deserialize(deserializer)?;
-    s.parse::<IpAddr>()
-        .map_err(|_| de::Error::custom(format!("invalid IP address: {s}")))
-}
-
-/// Reject zero during deserialization for `usize` fields.
 fn deserialize_max_connections<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<usize, D::Error> {
@@ -97,22 +81,11 @@ fn deserialize_max_connections<'de, D: Deserializer<'de>>(
     Ok(v)
 }
 
-/// Reject empty gateway URL strings during deserialization.
-fn deserialize_nonempty_gateway_url<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<String, D::Error> {
-    let s = String::deserialize(deserializer)?;
-    if s.is_empty() {
-        return Err(de::Error::custom("gateway_url must not be empty"));
-    }
-    Ok(s)
-}
-/// SOVD gateway connection configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
+#[serde(default)]
 pub struct SovdConfig {
     /// Base URL of the SOVD gateway (e.g. `http://localhost:20002`).
-    #[serde(deserialize_with = "deserialize_nonempty_gateway_url")]
-    pub gateway_url: String,
+    pub gateway_url: Url,
     /// `OAuth2` client ID for gateway authentication.
     pub client_id: String,
     /// `OAuth2` client secret for gateway authentication.
@@ -122,97 +95,229 @@ pub struct SovdConfig {
     /// SOVD API version path segment (e.g. `v15`).
     pub api_version: String,
     /// Whether to request inline schema in data responses.
-    #[serde(default = "SovdConfig::default_include_schema")]
     pub include_schema: bool,
     /// When `true`, bypass HTTP calls and generate synthetic responses.
-    #[serde(default)]
     pub mock_gateway: bool,
 }
 
-impl SovdConfig {
-    fn default_include_schema() -> bool {
-        true
+impl Default for SovdConfig {
+    fn default() -> Self {
+        Self {
+            gateway_url: "http://localhost:20002"
+                .parse()
+                .expect("hard-coded URL is always valid"),
+            client_id: "uds2sovd_proxy".into(),
+            client_secret: "test_secret".into(),
+            timeout_ms: 5_000,
+            api_version: "v15".into(),
+            include_schema: true,
+            mock_gateway: true,
+        }
     }
 }
 
-/// ECU identity and addressing configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
+pub struct EidGid([u8; 6]);
+
+impl EidGid {
+    fn is_all_zeros(self) -> bool {
+        self.0 == [0u8; 6]
+    }
+}
+
+impl Default for EidGid {
+    fn default() -> Self {
+        Self([0x00, 0x01, 0x02, 0x03, 0x04, 0x05])
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
 pub struct EcuConfig {
     /// Default ECU name used for SOVD component path.
     pub default_name: String,
     /// ISO 13400 logical address of the target ECU.
     #[serde(deserialize_with = "deserialize_nonzero_u16")]
     pub logical_address: u16,
-    /// 6-byte Entity Identification (MAC address).
-    pub eid: [u8; EID_GID_BYTE_LENGTH],
+    /// 6-byte Entity Identification
+    pub eid: EidGid,
     /// 6-byte Group Identification.
-    pub gid: [u8; EID_GID_BYTE_LENGTH],
-}
-
-/// Logging output configuration.
-#[derive(Debug, Clone, Deserialize)]
-pub struct LoggingConfig {
-    /// Log level filter (e.g. `info`, `debug`, `trace`).
-    pub level: String,
-    /// Output format: `pretty` (default) or `json`.
-    pub format: String,
-}
-
-impl Config {
-    /// Load configuration from TOML file
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be read or parsed.
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ProxyError::Config(format!("Failed to read config file: {e}")))?;
-
-        toml::from_str(&content)
-            .map_err(|e| ProxyError::Config(format!("Failed to parse config: {e}")))
-    }
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            doip_port: DEFAULT_DOIP_PORT,
-            bind_address: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            max_connections: DEFAULT_MAX_CONNECTIONS,
-            source_address: DEFAULT_SOURCE_ADDRESS,
-        }
-    }
-}
-
-impl Default for SovdConfig {
-    fn default() -> Self {
-        Self {
-            gateway_url: DEFAULT_GATEWAY_URL.to_string(),
-            client_id: DEFAULT_CLIENT_ID.to_string(),
-            client_secret: DEFAULT_CLIENT_SECRET.to_string(),
-            timeout_ms: DEFAULT_TIMEOUT_MS,
-            api_version: DEFAULT_API_VERSION.to_string(),
-            include_schema: true,
-            mock_gateway: false,
-        }
-    }
+    pub gid: EidGid,
 }
 
 impl Default for EcuConfig {
     fn default() -> Self {
         Self {
-            default_name: DEFAULT_ECU_NAME.to_string(),
+            default_name: "ECU".into(),
             logical_address: 0x0001,
-            eid: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
-            gid: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
+            eid: EidGid::default(),
+            gid: EidGid::default(),
         }
     }
 }
 
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            level: "info".to_string(),
-            format: "pretty".to_string(),
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// Human-readable coloured output (default).
+    #[default]
+    Pretty,
+    /// Machine-readable JSON (suitable for log aggregators).
+    Json,
+}
+
+/// Logging output configuration.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct LoggingConfig {
+    /// Log level filter.
+    pub level: LogLevel,
+    /// Output format.
+    pub format: LogFormat,
+}
+
+/// Any flag set here overrides the corresponding value from the TOML file.
+#[derive(Parser)]
+#[command(name = "uds2sovd-proxy", version)]
+pub struct Cli {
+    /// Path to the TOML configuration file.
+    #[arg(
+        short,
+        long,
+        value_name = "FILE",
+        env = "PROXY_CONFIG",
+        default_value = "config/config.toml"
+    )]
+    pub config: PathBuf,
+
+    /// Override the IP address to bind to.
+    #[arg(long, value_name = "ADDR", env = "PROXY_BIND_ADDRESS")]
+    pub bind_address: Option<IpAddr>,
+
+    /// Override the SOVD gateway URL.
+    #[arg(long, value_name = "URL", env = "PROXY_GATEWAY_URL")]
+    pub gateway_url: Option<Url>,
+
+    /// Enable mock gateway mode (no real HTTP calls).
+    #[arg(long, env = "PROXY_MOCK_GATEWAY")]
+    pub mock_gateway: bool,
+
+    /// Override the log level.
+    #[arg(long, value_enum, value_name = "LEVEL", env = "PROXY_LOG_LEVEL")]
+    pub log_level: Option<LogLevel>,
+
+    /// Override the log output format.
+    #[arg(long, value_enum, value_name = "FORMAT", env = "PROXY_LOG_FORMAT")]
+    pub log_format: Option<LogFormat>,
+
+    /// MDD file to load (absolute path, or filename resolved under `--mdd-dir`).
+    #[arg(short, long)]
+    pub mdd_file: PathBuf,
+
+    /// Directory searched when `--mdd-file` is a relative filename.
+    #[arg(long, default_value = "testcontainer/mdd")]
+    pub mdd_dir: PathBuf,
+}
+
+impl Config {
+    /// Build a fully-validated [`Config`] by layering defaults, a TOML file,
+    /// and CLI overrides.
+    ///
+    /// # Layer order
+    /// 1. [`Default`] values
+    /// 2. TOML file at the path given by `cli.config`
+    /// 3. CLI flags
+    ///
+    /// # Errors
+    /// Returns [`ProxyError::Config`] if the TOML file cannot be read/parsed
+    /// or if the merged configuration fails validation.
+    pub fn load(cli: &Cli) -> Result<Self> {
+        // defaults + TOML file
+        let mut config = if cli.config.exists() {
+            Self::from_file(&cli.config)?
+        } else {
+            Self::default()
+        };
+
+        // CLI overrides
+        if let Some(addr) = cli.bind_address {
+            config.server.bind_address = addr;
+        }
+        if let Some(ref url) = cli.gateway_url {
+            config.sovd.gateway_url = url.clone();
+        }
+        if cli.mock_gateway {
+            config.sovd.mock_gateway = true;
+        }
+        if let Some(level) = cli.log_level {
+            config.logging.level = level;
+        }
+        if let Some(format) = cli.log_format {
+            config.logging.format = format;
+        }
+
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Load and validate configuration from a TOML file (without CLI overrides).
+    ///
+    /// # Errors
+    /// Returns [`ProxyError::Config`] if the file cannot be read, parsed, or
+    /// if the resulting configuration fails validation.
+    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| ProxyError::Config(format!("cannot read `{}`: {e}", path.display())))?;
+
+        let config: Self = toml::from_str(&content)
+            .map_err(|e| ProxyError::Config(format!("cannot parse `{}`: {e}", path.display())))?;
+
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate the fully-merged configuration.
+    fn validate(&self) -> Result<()> {
+        let mut errors: Vec<String> = Vec::new();
+
+        if self.server.max_connections == 0 {
+            errors.push("[server] max_connections must be greater than zero".into());
+        }
+        if self.sovd.client_id.is_empty() {
+            errors.push("[sovd] client_id must not be empty".into());
+        }
+        if self.sovd.api_version.is_empty() {
+            errors.push("[sovd] api_version must not be empty".into());
+        }
+        if self.ecu.default_name.is_empty() {
+            errors.push("[ecu] default_name must not be empty".into());
+        }
+        if self.ecu.eid.is_all_zeros() {
+            errors.push("[ecu] eid must not be all zeros".into());
+        }
+        if self.ecu.gid.is_all_zeros() {
+            errors.push("[ecu] gid must not be all zeros".into());
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ProxyError::Config(format!(
+                "configuration validation failed:\n  - {}",
+                errors.join("\n  - ")
+            )))
         }
     }
 }
@@ -222,191 +327,309 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config() {
-        let config = Config::default();
-        assert_eq!(config.server.doip_port, 13400);
-        assert_eq!(config.sovd.api_version, "v15");
-        assert_eq!(config.ecu.eid, [0, 1, 2, 3, 4, 5]);
+    fn eid_gid_holds_expected_bytes() {
+        let eid = EidGid([0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E]);
+        assert_eq!(eid.0, [0x00, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E]);
     }
 
     #[test]
-    fn test_deserialize_valid_config() {
-        let toml_str = r#"
-                    [server]
-                    doip_port = 13400
-                    bind_address = "0.0.0.0"
-                    max_connections = 10
-                    source_address = 3712
+    fn eid_gid_all_zeros_detected() {
+        let eid = EidGid([0u8; 6]);
+        assert!(eid.is_all_zeros());
 
-                    [sovd]
-                    gateway_url = "http://localhost:20002"
-                    client_id = "test"
-                    client_secret = "secret"
-                    timeout_ms = 5000
-                    api_version = "v15"
-
-                    [ecu]
-                    default_name = "ECU"
-                    logical_address = 1
-                    eid = [0, 1, 2, 3, 4, 5]
-                    gid = [0, 1, 2, 3, 4, 5]
-
-                    [logging]
-                    level = "info"
-                    format = "pretty"
-                    "#;
-        let config: Config = toml::from_str(toml_str).expect("valid config should parse");
-        assert_eq!(config.ecu.eid, [0, 1, 2, 3, 4, 5]);
-        assert_eq!(config.server.doip_port, 13400);
+        let eid2 = EidGid([0, 1, 2, 3, 4, 5]);
+        assert!(!eid2.is_all_zeros());
     }
 
     #[test]
-    fn test_deserialize_rejects_zero_port() {
-        let toml_str = r#"
-                    [server]
-                    doip_port = 0
-                    bind_address = "0.0.0.0"
-                    max_connections = 10
-                    source_address = 3712
+    fn log_level_deserializes_all_variants_from_toml() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            level: LogLevel,
+        }
 
-                    [sovd]
-                    gateway_url = "http://localhost:20002"
-                    client_id = "test"
-                    client_secret = "secret"
-                    timeout_ms = 5000
-                    api_version = "v15"
-
-                    [ecu]
-                    default_name = "ECU"
-                    logical_address = 1
-                    eid = [0, 1, 2, 3, 4, 5]
-                    gid = [0, 1, 2, 3, 4, 5]
-
-                    [logging]
-                    level = "info"
-                    format = "pretty"
-                    "#;
-        let result = toml::from_str::<Config>(toml_str);
-        assert!(result.is_err(), "doip_port=0 should be rejected");
+        for (raw, expected) in [
+            ("error", LogLevel::Error),
+            ("warn", LogLevel::Warn),
+            ("info", LogLevel::Info),
+            ("debug", LogLevel::Debug),
+            ("trace", LogLevel::Trace),
+        ] {
+            let parsed: Wrapper =
+                toml::from_str(&format!("level = \"{raw}\"")).expect("valid level");
+            assert_eq!(parsed.level, expected);
+        }
     }
 
     #[test]
-    fn test_deserialize_rejects_zero_max_connections() {
+    fn log_format_deserializes_all_variants_from_toml() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            format: LogFormat,
+        }
+
+        for (raw, expected) in [("pretty", LogFormat::Pretty), ("json", LogFormat::Json)] {
+            let parsed: Wrapper =
+                toml::from_str(&format!("format = \"{raw}\"")).expect("valid format");
+            assert_eq!(parsed.format, expected);
+        }
+    }
+
+    #[test]
+    fn server_defaults_are_sane() {
+        let s = ServerConfig::default();
+        assert_eq!(s.doip_port, 13_400);
+        assert_eq!(s.max_connections, 10);
+    }
+
+    #[test]
+    fn sovd_defaults_are_sane() {
+        let s = SovdConfig::default();
+        assert!(!s.mock_gateway);
+        assert!(s.include_schema);
+        assert_eq!(s.timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn validation_rejects_empty_client_id() {
+        let mut config = Config::default();
+        config.sovd.client_id = String::new();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validation_rejects_all_zero_eid() {
+        let mut config = Config::default();
+        config.ecu.eid = EidGid([0u8; 6]);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validation_rejects_zero_max_connections() {
+        let mut config = Config::default();
+        config.server.max_connections = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validation_accumulates_multiple_errors() {
+        let mut config = Config::default();
+        config.sovd.client_id = String::new();
+        config.sovd.api_version = String::new();
+        config.ecu.eid = EidGid([0u8; 6]);
+        let err = config.validate().unwrap_err().to_string();
+        // Three separate bullets should appear.
+        assert_eq!(err.matches("  - ").count(), 3);
+    }
+
+    #[test]
+    fn toml_parses_complete_config() {
+        let raw = r#"
+[server]
+bind_address   = "127.0.0.1"
+max_connections = 5
+source_address = 3712
+
+[sovd]
+gateway_url  = "http://localhost:20002"
+client_id    = "test"
+client_secret = "secret"
+timeout_ms   = 3000
+api_version  = "v15"
+include_schema = false
+mock_gateway   = true
+
+[ecu]
+default_name    = "TEST_ECU"
+logical_address = 1
+eid = [0, 1, 2, 3, 4, 5]
+gid = [0, 1, 2, 3, 4, 5]
+
+[logging]
+level  = "debug"
+format = "json"
+"#;
+        let cfg: Config = toml::from_str(raw).expect("valid TOML");
+        assert!(cfg.sovd.mock_gateway);
+        assert_eq!(cfg.logging.level, LogLevel::Debug);
+        assert_eq!(cfg.logging.format, LogFormat::Json);
+    }
+
+    #[test]
+    fn deserialize_rejects_zero_max_connections() {
         let toml_str = r#"
-                    [server]
-                    doip_port = 13400
-                    bind_address = "0.0.0.0"
-                    max_connections = 0
-                    source_address = 3712
+[server]
+bind_address = "0.0.0.0"
+max_connections = 0
+source_address = 3712
 
-                    [sovd]
-                    gateway_url = "http://localhost:20002"
-                    client_id = "test"
-                    client_secret = "secret"
-                    timeout_ms = 5000
-                    api_version = "v15"
+[sovd]
+gateway_url = "http://localhost:20002"
+client_id = "test"
+client_secret = "secret"
+timeout_ms = 5000
+api_version = "v15"
 
-                    [ecu]
-                    default_name = "ECU"
-                    logical_address = 1
-                    eid = [0, 1, 2, 3, 4, 5]
-                    gid = [0, 1, 2, 3, 4, 5]
+[ecu]
+default_name = "ECU"
+logical_address = 1
+eid = [0, 1, 2, 3, 4, 5]
+gid = [0, 1, 2, 3, 4, 5]
 
-                    [logging]
-                    level = "info"
-                    format = "pretty"
-                    "#;
+[logging]
+level = "info"
+format = "pretty"
+"#;
         let result = toml::from_str::<Config>(toml_str);
         assert!(result.is_err(), "max_connections=0 should be rejected");
     }
 
     #[test]
-    fn test_deserialize_rejects_zero_logical_address() {
+    fn deserialize_rejects_zero_logical_address() {
         let toml_str = r#"
-                    [server]
-                    doip_port = 13400
-                    bind_address = "0.0.0.0"
-                    max_connections = 10
-                    source_address = 3712
+[server]
+bind_address = "0.0.0.0"
+max_connections = 10
+source_address = 3712
 
-                    [sovd]
-                    gateway_url = "http://localhost:20002"
-                    client_id = "test"
-                    client_secret = "secret"
-                    timeout_ms = 5000
-                    api_version = "v15"
+[sovd]
+gateway_url = "http://localhost:20002"
+client_id = "test"
+client_secret = "secret"
+timeout_ms = 5000
+api_version = "v15"
 
-                    [ecu]
-                    default_name = "ECU"
-                    logical_address = 0
-                    eid = [0, 1, 2, 3, 4, 5]
-                    gid = [0, 1, 2, 3, 4, 5]
+[ecu]
+default_name = "ECU"
+logical_address = 0
+eid = [0, 1, 2, 3, 4, 5]
+gid = [0, 1, 2, 3, 4, 5]
 
-                    [logging]
-                    level = "info"
-                    format = "pretty"
-                    "#;
+[logging]
+level = "info"
+format = "pretty"
+"#;
         let result = toml::from_str::<Config>(toml_str);
         assert!(result.is_err(), "logical_address=0 should be rejected");
     }
 
     #[test]
-    fn test_deserialize_rejects_wrong_eid_length() {
+    fn deserialize_rejects_wrong_eid_length() {
         let toml_str = r#"
-                    [server]
-                    doip_port = 13400
-                    bind_address = "0.0.0.0"
-                    max_connections = 10
-                    source_address = 3712
+[server]
+bind_address = "0.0.0.0"
+max_connections = 10
+source_address = 3712
 
-                    [sovd]
-                    gateway_url = "http://localhost:20002"
-                    client_id = "test"
-                    client_secret = "secret"
-                    timeout_ms = 5000
-                    api_version = "v15"
+[sovd]
+gateway_url = "http://localhost:20002"
+client_id = "test"
+client_secret = "secret"
+timeout_ms = 5000
+api_version = "v15"
 
-                    [ecu]
-                    default_name = "ECU"
-                    logical_address = 1
-                    eid = [0, 1, 2]
-                    gid = [0, 1, 2, 3, 4, 5]
+[ecu]
+default_name = "ECU"
+logical_address = 1
+eid = [0, 1, 2]
+gid = [0, 1, 2, 3, 4, 5]
 
-                    [logging]
-                    level = "info"
-                    format = "pretty"
-                    "#;
+[logging]
+level = "info"
+format = "pretty"
+"#;
         let result = toml::from_str::<Config>(toml_str);
         assert!(result.is_err(), "eid with wrong length should be rejected");
     }
 
     #[test]
-    fn test_deserialize_rejects_empty_gateway_url() {
+    fn deserialize_rejects_invalid_gateway_url() {
         let toml_str = r#"
-                    [server]
-                    doip_port = 13400
-                    bind_address = "0.0.0.0"
-                    max_connections = 10
-                    source_address = 3712
+[server]
+bind_address = "0.0.0.0"
+max_connections = 10
+source_address = 3712
 
-                    [sovd]
-                    gateway_url = ""
-                    client_id = "test"
-                    client_secret = "secret"
-                    timeout_ms = 5000
-                    api_version = "v15"
+[sovd]
+gateway_url = "not a valid url"
+client_id = "test"
+client_secret = "secret"
+timeout_ms = 5000
+api_version = "v15"
 
-                    [ecu]
-                    default_name = "ECU"
-                    logical_address = 1
-                    eid = [0, 1, 2, 3, 4, 5]
-                    gid = [0, 1, 2, 3, 4, 5]
+[ecu]
+default_name = "ECU"
+logical_address = 1
+eid = [0, 1, 2, 3, 4, 5]
+gid = [0, 1, 2, 3, 4, 5]
 
-                    [logging]
-                    level = "info"
-                    format = "pretty"
-                    "#;
+[logging]
+level = "info"
+format = "pretty"
+"#;
         let result = toml::from_str::<Config>(toml_str);
-        assert!(result.is_err(), "empty gateway_url should be rejected");
+        assert!(result.is_err(), "invalid gateway_url should be rejected");
+    }
+
+    #[test]
+    fn deserialize_rejects_invalid_log_level() {
+        let toml_str = r#"
+[server]
+bind_address = "0.0.0.0"
+max_connections = 10
+source_address = 3712
+
+[sovd]
+gateway_url = "http://localhost:20002"
+client_id = "test"
+client_secret = "secret"
+timeout_ms = 5000
+api_version = "v15"
+
+[ecu]
+default_name = "ECU"
+logical_address = 1
+eid = [0, 1, 2, 3, 4, 5]
+gid = [0, 1, 2, 3, 4, 5]
+
+[logging]
+level = "verbose"
+format = "pretty"
+"#;
+        let result = toml::from_str::<Config>(toml_str);
+        assert!(result.is_err(), "invalid log level should be rejected");
+    }
+
+    // ── CLI integration ───────────────────────────────────────────────────
+
+    #[test]
+    fn cli_overrides_default_values() {
+        let cli = Cli::parse_from([
+            "uds2sovd-proxy",
+            "--config",
+            "/nonexistent/path.toml",
+            "--log-level",
+            "debug",
+            "--mock-gateway",
+            "--mdd-file",
+            "test.mdd",
+        ]);
+
+        let config = Config::load(&cli).expect("should build from defaults + CLI");
+        assert_eq!(config.logging.level, LogLevel::Debug);
+        assert!(config.sovd.mock_gateway);
+    }
+
+    #[test]
+    fn toml_with_missing_sections_uses_defaults() {
+        let raw = r#"
+[server]
+bind_address = "127.0.0.1"
+max_connections = 5
+source_address = 3712
+"#;
+        let cfg: Config = toml::from_str(raw).expect("partial TOML should parse");
+        assert_eq!(cfg.sovd.api_version, "v15");
+        assert_eq!(cfg.logging.level, LogLevel::Info);
     }
 }

@@ -10,10 +10,11 @@
  * https://www.apache.org/licenses/LICENSE-2.0
  */
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
+use cda_interfaces::HashMap;
 use proxy_core::{
-    Config, ProxyError, ResolvedService, Result, ServiceResolver, error::UdsError,
+    Config, ProxyError, ResolvedService, Result, ServiceResolver, ServiceType, error::UdsError,
 };
 use tracing::info;
 
@@ -78,20 +79,14 @@ impl SovdDiagHandler {
             name: service_name,
             params: parsed_data,
         } = mgr
-            .resolve_read_service(did, uds_request)
+            .resolve(ServiceType::Read, did, uds_request)
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;
 
         info!("[MDD] READ service found: '{}'", service_name);
 
         self.mapper
-            .process_read_data_request(
-                did,
-                uds_request,
-                Some(mgr),
-                &service_name,
-                Some(parsed_data),
-            )
+            .process_read_data_request(did, uds_request, mgr, &service_name, Some(parsed_data))
             .await
     }
 
@@ -114,7 +109,7 @@ impl SovdDiagHandler {
             name: service_name,
             params: parsed_data,
         } = mgr
-            .resolve_write_service(did, uds_request)
+            .resolve(ServiceType::Write, did, uds_request)
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;
 

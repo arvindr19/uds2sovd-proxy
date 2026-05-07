@@ -44,6 +44,7 @@ toml = "0.9.8"
 
 # ---- networking crates ----
 reqwest = { version = "0.12.24", default-features = false }
+url = { version = "2", features = ["serde"] }
 
 # ---- tracing & logging crates ----
 tracing = "0.1.41"

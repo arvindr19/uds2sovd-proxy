@@ -1701,12 +1701,14 @@ dependencies = [
  "cda-database",
  "cda-interfaces",
  "cda-plugin-security",
+ "clap",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "toml",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -1741,6 +1743,7 @@ dependencies = [
 name = "proxy-sovd"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "cda-interfaces",
  "proxy-core",
  "reqwest",
@@ -2770,6 +2773,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

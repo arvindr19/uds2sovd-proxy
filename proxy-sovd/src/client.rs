@@ -385,7 +385,9 @@ mod tests {
 
     fn create_test_config() -> SovdConfig {
         SovdConfig {
-            gateway_url: "http://localhost:20002".to_string(),
+            gateway_url: "http://localhost:20002"
+                .parse()
+                .expect("hard-coded URL is always valid"),
             client_id: "test-client".to_string(),
             client_secret: "test-secret".to_string(),
             timeout_ms: 5000,

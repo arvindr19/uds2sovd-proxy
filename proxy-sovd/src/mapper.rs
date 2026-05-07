@@ -61,7 +61,7 @@ impl SovdMapper {
         Self {
             ecu_name: config.ecu.default_name.clone(),
             mock_gateway: config.sovd.mock_gateway,
-            gateway_url: config.sovd.gateway_url.clone(),
+            gateway_url: config.sovd.gateway_url.to_string(),
             api_version: config.sovd.api_version.clone(),
             sovd_client,
         }

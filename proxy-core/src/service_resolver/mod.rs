@@ -37,7 +37,6 @@ pub(crate) use resolve::DidResolver;
 pub use resolve::{ResolvedService, ServiceType};
 pub(crate) use response::ResponseEncoder;
 use tokio::sync::RwLock;
-pub use uds_helpers::find_mux_case_prefix;
 
 pub(crate) type ManagerHandle = Arc<RwLock<CdaEcuManager<DefaultSecurityPluginData>>>;
 

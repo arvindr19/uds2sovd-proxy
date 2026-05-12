@@ -95,7 +95,7 @@ pub(super) fn parse_mux_coded_value(coded_value: &str) -> Option<u64> {
 /// that does not exceed the DID.  This correctly handles both single-value
 /// MUX cases (e.g. 0x7007) and range cases (e.g. 0xD100–0xD150).
 #[must_use]
-pub fn find_mux_case_prefix(meta: &[ResponseParameterInfo], did: u16) -> Option<String> {
+pub(crate) fn find_mux_case_prefix(meta: &[ResponseParameterInfo], did: u16) -> Option<String> {
     let did_val = u64::from(did);
 
     // Collect (lower_bound, case_name) for all MUX case entries.

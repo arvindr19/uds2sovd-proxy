@@ -16,6 +16,4 @@ pub(crate) mod service_resolver;
 
 pub use config::{Cli, Config, EidGid, LogFormat, LogLevel};
 pub use error::{ProxyError, Result};
-pub use service_resolver::{
-    ResolvedService, ServiceResolver, ServiceType, find_mux_case_prefix, uds_service_ids,
-};
+pub use service_resolver::{ResolvedService, ServiceResolver, ServiceType, uds_service_ids};

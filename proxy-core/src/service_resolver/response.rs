@@ -29,14 +29,14 @@ use super::{
 };
 
 /// Encodes SOVD JSON data into UDS response bytes using MDD metadata.
-pub(crate) struct ResponseEncoder {
+pub struct ResponseEncoder {
     manager: ManagerHandle,
     metadata: MetadataProvider,
 }
 
 impl ResponseEncoder {
     /// Create a new response encoder.
-    pub(crate) fn new(manager: ManagerHandle, metadata: MetadataProvider) -> Self {
+    pub fn new(manager: ManagerHandle, metadata: MetadataProvider) -> Self {
         Self { manager, metadata }
     }
 
@@ -60,7 +60,7 @@ impl ResponseEncoder {
     /// <https://github.com/eclipse-opensovd/uds2sovd-proxy/issues/17> --
     /// once the SOVD server returns pre-encoded UDS bytes, both encoding
     /// paths can be removed.
-    pub(crate) async fn build_response(
+    pub async fn build_response(
         &self,
         service_name: &str,
         sid: u8,
@@ -105,9 +105,6 @@ impl ResponseEncoder {
                             response.extend(encode_unsigned_be(num));
                         } else if let Some(num) = n.as_i64() {
                             let unsigned = num.cast_unsigned();
-                            // For negative numbers: if they fit in one byte, use direct cast;
-                            // otherwise, split into high and low bytes. Truncation is intentional
-                            // for single-byte encoding of small negative values.
                             #[allow(clippy::cast_possible_truncation)]
                             if u8::try_from(unsigned).is_ok() {
                                 response.push(unsigned as u8);
@@ -119,8 +116,6 @@ impl ResponseEncoder {
                     }
                     serde_json::Value::Array(arr) => {
                         for item in arr {
-                            // Array elements are expected to represent raw bytes;
-                            // values > 255 are truncated to the low byte by design.
                             #[allow(clippy::cast_possible_truncation)]
                             if let Some(byte) = item.as_u64() {
                                 response.push(byte as u8);
@@ -176,10 +171,56 @@ impl ResponseEncoder {
             return None;
         }
 
+        // Find the MUX case matching this DID (floor-based).
         let mux_case_prefix = find_mux_case_prefix(&meta, did);
-        let active_params = filter_active_params(&meta, mux_case_prefix.as_deref());
-        let effective_sizes = compute_effective_sizes(&active_params, response_data);
 
+        // Derive the case marker name for total_size computation.
+        let mux_marker_name: Option<String> = mux_case_prefix
+            .as_deref()
+            .map(|pfx| format!("__mux_case__/{}", pfx.trim_end_matches('/')));
+
+        // Keep top-level params (no '/') plus matching MUX case sub-params.
+        let active_params: Vec<_> = meta
+            .iter()
+            .filter(|p| {
+                if !p.name.contains('/') {
+                    true
+                } else if let Some(prefix) = &mux_case_prefix {
+                    p.name.starts_with(prefix.as_str())
+                        || mux_marker_name.as_deref() == Some(&p.name)
+                } else {
+                    !p.name.starts_with("__mux_case__/")
+                }
+            })
+            .collect();
+
+        // Resolve effective size: for VALUE params with `byte_size: None`
+        // (variable-length DOPs), infer the size from actual response data.
+        let effective_sizes: Vec<usize> = active_params
+            .iter()
+            .map(|p| {
+                if let Some(s) = p.byte_size {
+                    return s as usize;
+                }
+                // Variable-size VALUE param -- infer size from the data.
+                if !matches!(
+                    &p.param_type,
+                    cda_interfaces::ParameterTypeMetadata::Value { .. }
+                ) {
+                    return 0;
+                }
+                let short_name = p.name.rsplit('/').next().unwrap_or(&p.name);
+                let value = response_data
+                    .get(&p.name)
+                    .or_else(|| response_data.get(short_name))
+                    .or_else(|| response_data.get(&p.name.to_ascii_lowercase()))
+                    .or_else(|| response_data.get(&short_name.to_ascii_lowercase()))
+                    .or_else(|| response_data.get("data"));
+                value_to_bytes(value).len()
+            })
+            .collect();
+
+        // Determine total response size from filtered params.
         let total_size = active_params
             .iter()
             .zip(effective_sizes.iter())
@@ -188,13 +229,74 @@ impl ResponseEncoder {
             .unwrap_or(UDS_POSITIVE_RESPONSE_MIN_SIZE);
 
         let mut response = vec![0u8; total_size];
-        encode_params_into_response(
-            &mut response,
-            &active_params,
-            &effective_sizes,
-            response_data,
-            did,
-        );
+
+        for (param, &eff_size) in active_params.iter().zip(effective_sizes.iter()) {
+            // Skip MUX case markers — they're only used for total_size computation.
+            if param.name.starts_with("__mux_case__/") {
+                continue;
+            }
+            let pos = param.byte_position as usize;
+
+            if eff_size == 0 || pos.saturating_add(eff_size) > response.len() {
+                continue;
+            }
+
+            match &param.param_type {
+                cda_interfaces::ParameterTypeMetadata::CodedConst { coded_value } => {
+                    // The SID byte is stored as a decimal string (e.g. "98" for 0x62).
+                    if let Ok(val) = coded_value.parse::<u64>() {
+                        let bytes = encode_unsigned_be(val);
+                        let copy_len = bytes.len().min(eff_size);
+                        // Right-align in the field (big-endian convention).
+                        let offset = eff_size.saturating_sub(copy_len);
+                        let dst_start = pos.saturating_add(offset);
+                        let dst_end = dst_start.saturating_add(copy_len);
+                        let src_start = bytes.len().saturating_sub(copy_len);
+                        if let (Some(dst), Some(src)) =
+                            (response.get_mut(dst_start..dst_end), bytes.get(src_start..))
+                        {
+                            dst.copy_from_slice(src);
+                        }
+                    }
+                }
+                cda_interfaces::ParameterTypeMetadata::MatchingRequestParam { .. } => {
+                    // DID bytes from the original request, big-endian.
+                    let did_bytes = [(did >> 8) as u8, (did & 0xFF) as u8];
+                    let copy_len = did_bytes.len().min(eff_size);
+                    if let (Some(dst), Some(src)) = (
+                        response.get_mut(pos..pos.saturating_add(copy_len)),
+                        did_bytes.get(..copy_len),
+                    ) {
+                        dst.copy_from_slice(src);
+                    }
+                }
+                cda_interfaces::ParameterTypeMetadata::Value { .. } => {
+                    // For MUX case params, try the short name (after '/') as well.
+                    let short_name = param.name.rsplit('/').next().unwrap_or(&param.name);
+                    let value = response_data
+                        .get(&param.name)
+                        .or_else(|| response_data.get(short_name))
+                        .or_else(|| response_data.get(&param.name.to_ascii_lowercase()))
+                        .or_else(|| response_data.get(&short_name.to_ascii_lowercase()))
+                        .or_else(|| response_data.get("data"));
+
+                    if param.byte_size.is_some() {
+                        encode_value_at(&mut response, pos, eff_size, value);
+                    } else {
+                        // Variable-size param: write the raw byte representation.
+                        let bytes = value_to_bytes(value);
+                        let copy_len = bytes.len().min(eff_size);
+                        if let (Some(dst), Some(src)) = (
+                            response.get_mut(pos..pos.saturating_add(copy_len)),
+                            bytes.get(..copy_len),
+                        ) {
+                            dst.copy_from_slice(src);
+                        }
+                    }
+                }
+                cda_interfaces::ParameterTypeMetadata::PhysConst { .. } => {}
+            }
+        }
 
         tracing::debug!(
             "[MDD] Built UDS response via metadata for '{}'): {:02X?}",
@@ -233,161 +335,12 @@ impl ResponseEncoder {
     }
 }
 
-/// Keep only the parameters that are active for the given MUX case.
-///
-/// - Top-level params (no `/` in name) are always included.
-/// - When `mux_case_prefix` is `Some`, only sub-params whose name starts with
-///   that prefix (plus the corresponding `__mux_case__` marker) are kept.
-/// - When `mux_case_prefix` is `None`, all params without `/` are kept and
-///   any `__mux_case__/` entries are dropped.
-fn filter_active_params<'a>(
-    meta: &'a [cda_interfaces::ResponseParameterInfo],
-    mux_case_prefix: Option<&str>,
-) -> Vec<&'a cda_interfaces::ResponseParameterInfo> {
-    let mux_marker_name: Option<String> =
-        mux_case_prefix.map(|pfx| format!("__mux_case__/{}", pfx.trim_end_matches('/')));
-
-    meta.iter()
-        .filter(|p| {
-            if !p.name.contains('/') {
-                true
-            } else if let Some(prefix) = mux_case_prefix {
-                p.name.starts_with(prefix) || mux_marker_name.as_deref() == Some(p.name.as_str())
-            } else {
-                !p.name.starts_with("__mux_case__/")
-            }
-        })
-        .collect()
-}
-
-/// Determine the effective byte size of each active parameter.
-///
-/// Fixed-size params use `byte_size` directly. Variable-size `VALUE` params
-/// (where `byte_size` is `None`) infer their size from the serialised form of
-/// the matching value in `response_data`.
-fn compute_effective_sizes(
-    active_params: &[&cda_interfaces::ResponseParameterInfo],
-    response_data: &HashMap<String, serde_json::Value>,
-) -> Vec<usize> {
-    active_params
-        .iter()
-        .map(|p| {
-            if let Some(s) = p.byte_size {
-                return s as usize;
-            }
-            // Variable-size VALUE param -- infer size from the data.
-            if !matches!(
-                &p.param_type,
-                cda_interfaces::ParameterTypeMetadata::Value { .. }
-            ) {
-                return 0;
-            }
-            let short_name = p.name.rsplit('/').next().unwrap_or(&p.name);
-            let value = response_data
-                .get(&p.name)
-                .or_else(|| response_data.get(short_name))
-                .or_else(|| response_data.get(&p.name.to_ascii_lowercase()))
-                .or_else(|| response_data.get(&short_name.to_ascii_lowercase()))
-                .or_else(|| response_data.get("data"));
-            value_to_bytes(value).len()
-        })
-        .collect()
-}
-
-/// Write each active parameter into `response` at its MDD-defined byte position.
-///
-/// - `__mux_case__/` markers are skipped (used only for size computation).
-/// - Out-of-bounds or zero-size writes are silently ignored.
-///
-/// # Note on casts
-///
-/// `u16 >> 8` and `u16 & 0xFF` both fit in a `u8`; the truncating casts are
-/// intentional and cannot overflow.
-#[allow(clippy::cast_possible_truncation)]
-fn encode_params_into_response(
-    response: &mut [u8],
-    active_params: &[&cda_interfaces::ResponseParameterInfo],
-    effective_sizes: &[usize],
-    response_data: &HashMap<String, serde_json::Value>,
-    did: u16,
-) {
-    for (param, &eff_size) in active_params.iter().zip(effective_sizes) {
-        // MUX case markers are only used for total_size computation.
-        if param.name.starts_with("__mux_case__/") {
-            continue;
-        }
-        let pos = param.byte_position as usize;
-
-        if eff_size == 0 || pos.saturating_add(eff_size) > response.len() {
-            continue;
-        }
-
-        match &param.param_type {
-            cda_interfaces::ParameterTypeMetadata::CodedConst { coded_value } => {
-                // The SID byte is stored as a decimal string (e.g. "98" for 0x62).
-                if let Ok(val) = coded_value.parse::<u64>() {
-                    let bytes = encode_unsigned_be(val);
-                    let copy_len = bytes.len().min(eff_size);
-                    // Right-align in the field (big-endian convention).
-                    let offset = eff_size.saturating_sub(copy_len);
-                    let dst_start = pos.saturating_add(offset);
-                    let dst_end = dst_start.saturating_add(copy_len);
-                    let src_start = bytes.len().saturating_sub(copy_len);
-                    if let (Some(dst), Some(src)) =
-                        (response.get_mut(dst_start..dst_end), bytes.get(src_start..))
-                    {
-                        dst.copy_from_slice(src);
-                    }
-                }
-            }
-            cda_interfaces::ParameterTypeMetadata::MatchingRequestParam { .. } => {
-                // DID bytes from the original request, big-endian.
-                let did_bytes = [(did >> 8) as u8, (did & 0xFF) as u8];
-                let copy_len = did_bytes.len().min(eff_size);
-                if let (Some(dst), Some(src)) = (
-                    response.get_mut(pos..pos.saturating_add(copy_len)),
-                    did_bytes.get(..copy_len),
-                ) {
-                    dst.copy_from_slice(src);
-                }
-            }
-            cda_interfaces::ParameterTypeMetadata::Value { .. } => {
-                // For MUX case params, try the short name (after '/') as well.
-                let short_name = param.name.rsplit('/').next().unwrap_or(&param.name);
-                let value = response_data
-                    .get(&param.name)
-                    .or_else(|| response_data.get(short_name))
-                    .or_else(|| response_data.get(&param.name.to_ascii_lowercase()))
-                    .or_else(|| response_data.get(&short_name.to_ascii_lowercase()))
-                    .or_else(|| response_data.get("data"));
-                if param.byte_size.is_some() {
-                    encode_value_at(response, pos, eff_size, value);
-                } else {
-                    // Variable-size param: write the raw byte representation.
-                    let bytes = value_to_bytes(value);
-                    let copy_len = bytes.len().min(eff_size);
-                    if let (Some(dst), Some(src)) = (
-                        response.get_mut(pos..pos.saturating_add(copy_len)),
-                        bytes.get(..copy_len),
-                    ) {
-                        dst.copy_from_slice(src);
-                    }
-                }
-            }
-            cda_interfaces::ParameterTypeMetadata::PhysConst { .. } => {}
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use cda_interfaces::{HashMap, ParameterTypeMetadata, ResponseParameterInfo};
+    use cda_interfaces::{ParameterTypeMetadata, ResponseParameterInfo};
 
-    use super::{
-        super::uds_helpers::{
-            encode_unsigned_be, encode_value_at, find_mux_case_prefix, value_to_bytes,
-        },
-        compute_effective_sizes, filter_active_params,
+    use super::super::uds_helpers::{
+        encode_unsigned_be, encode_value_at, find_mux_case_prefix, value_to_bytes,
     };
 
     /// Numbers are right-aligned (big-endian) in the target field.
@@ -562,8 +515,22 @@ mod tests {
         ];
 
         let mux_case_prefix = find_mux_case_prefix(&meta, did);
-        let active: Vec<_> = filter_active_params(&meta, mux_case_prefix.as_deref())
-            .into_iter()
+        let mux_marker_name: Option<String> = mux_case_prefix
+            .as_deref()
+            .map(|pfx| format!("__mux_case__/{}", pfx.trim_end_matches('/')));
+
+        let active: Vec<_> = meta
+            .iter()
+            .filter(|p| {
+                if !p.name.contains('/') {
+                    true
+                } else if let Some(prefix) = &mux_case_prefix {
+                    p.name.starts_with(prefix.as_str())
+                        || mux_marker_name.as_deref() == Some(p.name.as_str())
+                } else {
+                    !p.name.starts_with("__mux_case__/")
+                }
+            })
             .map(|p| p.name.as_str())
             .collect();
 
@@ -589,8 +556,9 @@ mod tests {
         let mux_case_prefix = find_mux_case_prefix(&meta, did);
         assert!(mux_case_prefix.is_none());
 
-        let active: Vec<_> = filter_active_params(&meta, mux_case_prefix.as_deref())
-            .into_iter()
+        let active: Vec<_> = meta
+            .iter()
+            .filter(|p| !p.name.contains('/') || p.name.starts_with("__mux_case__/"))
             .map(|p| p.name.as_str())
             .collect();
 
@@ -605,11 +573,12 @@ mod tests {
             value_param("DID", 1, 2),
             value_param("DATA", 3, 17),
         ];
-        let active_refs: Vec<&_> = params.iter().collect();
-        // All params have fixed byte_size, so response_data is not consulted.
-        let effective_sizes = compute_effective_sizes(&active_refs, &HashMap::default());
+        let effective_sizes: Vec<usize> = params
+            .iter()
+            .map(|p| p.byte_size.map_or(0, |s| s as usize))
+            .collect();
 
-        let total = active_refs
+        let total = params
             .iter()
             .zip(effective_sizes.iter())
             .map(|(p, &sz)| (p.byte_position as usize).saturating_add(sz))

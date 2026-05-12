@@ -10,11 +10,12 @@
  * https://www.apache.org/licenses/LICENSE-2.0
  */
 
+use std::sync::Arc;
+
 use cda_interfaces::HashMap;
 use proxy_core::{
     Config, ProxyError, ResolvedService, Result, ServiceResolver, ServiceType, error::UdsError,
 };
-use std::sync::Arc;
 use tracing::info;
 
 use crate::mapper::SovdMapper;
@@ -32,10 +33,6 @@ pub struct SovdDiagHandler {
     /// SOVD gateway mapper for request/response translation.
     mapper: SovdMapper,
     /// Per-ECU service resolvers keyed by ECU name.
-    ///
-    /// A map is used to support future multi-ECU configurations where a single
-    /// proxy instance handles requests for more than one ECU. Currently only
-    /// the ECU named in `config.ecu.default_name` is used.
     ecu_managers: Arc<HashMap<String, ServiceResolver>>,
 }
 
@@ -55,7 +52,10 @@ impl SovdDiagHandler {
     }
 
     fn ecu_manager(&self) -> Option<&ServiceResolver> {
-        self.ecu_managers.get(&self.config.ecu.default_name)
+        let ecu_name = &self.config.ecu.default_name;
+        self.ecu_managers
+            .get(ecu_name)
+            .or_else(|| self.ecu_managers.values().next())
     }
 }
 
@@ -79,7 +79,6 @@ impl SovdDiagHandler {
             name: service_name,
             params: parsed_data,
         } = mgr
-            .resolver
             .resolve(ServiceType::Read, did, uds_request)
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;
@@ -110,7 +109,6 @@ impl SovdDiagHandler {
             name: service_name,
             params: parsed_data,
         } = mgr
-            .resolver
             .resolve(ServiceType::Write, did, uds_request)
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;

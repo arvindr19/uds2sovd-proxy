@@ -19,7 +19,7 @@
 pub(crate) mod metadata;
 pub(crate) mod resolve;
 pub(crate) mod response;
-pub mod uds_helpers;
+pub(crate) mod uds_helpers;
 
 use std::sync::Arc;
 
@@ -27,14 +27,15 @@ use cda_core::{DiagServiceResponseStruct, EcuManager as CdaEcuManager};
 use cda_database::datatypes::DiagnosticDatabase;
 use cda_interfaces::{
     DiagComm, DiagCommType, DiagServiceError, EcuManager as EcuManagerTrait, EcuManagerType,
-    FunctionalDescriptionConfig, HashMap, Protocol,
+    FunctionalDescriptionConfig, HashMap, Protocol, ResponseParameterInfo,
     datatypes::{ComParams, DatabaseNamingConvention, DiagnosticServiceAffixPosition},
     diagservices::DiagServiceResponseType,
 };
 use cda_plugin_security::DefaultSecurityPluginData;
-pub use metadata::MetadataProvider;
-pub use resolve::{DidResolver, ResolvedService, ServiceType};
-pub use response::ResponseEncoder;
+pub(crate) use metadata::MetadataProvider;
+pub(crate) use resolve::DidResolver;
+pub use resolve::{ResolvedService, ServiceType};
+pub(crate) use response::ResponseEncoder;
 use tokio::sync::RwLock;
 pub use uds_helpers::find_mux_case_prefix;
 
@@ -85,23 +86,21 @@ pub mod uds_service_ids {
 
 pub struct ServiceResolver {
     /// DID-to-service resolution.
-    pub resolver: DidResolver,
+    resolver: DidResolver,
     /// UDS response encoding from SOVD JSON data.
-    pub encoder: ResponseEncoder,
+    encoder: ResponseEncoder,
     /// MDD metadata queries (request/response parameter info, MUX cases).
-    pub metadata: MetadataProvider,
-    ecu_name: String,
+    metadata: MetadataProvider,
 }
 
 impl ServiceResolver {
-    /// Initialise from an ECU name and a loaded MDD database.
+    /// Initialise from a loaded MDD database.
     ///
     /// # Errors
     ///
     /// Returns `DiagServiceError` when the CDA `EcuManager` cannot be created
     /// or the base variant fails to activate.
     pub async fn new(
-        ecu_name: String,
         db: DiagnosticDatabase,
         logical_address: u16,
         tester_address: u16,
@@ -138,7 +137,6 @@ impl ServiceResolver {
             resolver: DidResolver::new(Arc::clone(&handle)),
             encoder: ResponseEncoder::new(Arc::clone(&handle), metadata.clone()),
             metadata,
-            ecu_name,
         })
     }
 
@@ -152,7 +150,7 @@ impl ServiceResolver {
     /// state-chart and pins the engine to a determinate base state.
     ///
     /// #`TODO:` real variant detection
-    /// <https://github.com/eclipse-opensovd/uds2sovd-proxy/issues/16>
+    /// <https://github.com/eclipse-opensovd/uds2sovd-proxy/issues/16\>
     /// Replace the dummy response with actual variant-identification DID
     /// reads from a live ECU connection:
     ///   1. Read variant-identification DIDs from the ECU.
@@ -173,7 +171,7 @@ impl ServiceResolver {
                 type_: DiagCommType::Data,
                 lookup_name: None,
             },
-            data: vec![],
+            data: Vec::new(),
             mapped_data: None,
             response_type: DiagServiceResponseType::Positive,
         };
@@ -197,10 +195,53 @@ impl ServiceResolver {
             })
     }
 
-    /// Get ECU name.
-    #[must_use]
-    pub fn ecu_name(&self) -> &str {
-        &self.ecu_name
+    /// Resolve the best-matching MDD service for a UDS DID request.
+    ///
+    /// Returns `None` when no matching service is found in the MDD.
+    pub async fn resolve(
+        &self,
+        service_type: ServiceType,
+        did: u16,
+        uds_bytes: &[u8],
+    ) -> Option<ResolvedService> {
+        self.resolver.resolve(service_type, did, uds_bytes).await
+    }
+
+    /// Build UDS response bytes from SOVD JSON data using MDD metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DiagServiceError` when the response cannot be encoded.
+    pub async fn build_response(
+        &self,
+        service_name: &str,
+        sid: u8,
+        did: u16,
+        response_data: HashMap<String, serde_json::Value>,
+    ) -> Result<Vec<u8>, DiagServiceError> {
+        self.encoder
+            .build_response(service_name, sid, did, response_data)
+            .await
+    }
+
+    /// Return the best available POS-RESPONSE metadata for `service_name` + `did`.
+    ///
+    /// Tries enriched (MUX-substituted) metadata first; falls back to the plain
+    /// POS-RESPONSE layout when the enriched path fails.
+    /// NOTE:
+    /// This is intended for the mock response path only.  Once the SOVD server
+    /// supplies real data this accessor is no longer required externally.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DiagServiceError` when both the enriched and plain metadata
+    /// lookups fail.
+    pub async fn get_response_metadata(
+        &self,
+        service_name: &str,
+        did: u16,
+    ) -> Result<Vec<ResponseParameterInfo>, DiagServiceError> {
+        self.metadata.get_response_metadata(service_name, did).await
     }
 
     fn default_com_params(logical_address: u16, tester_address: u16) -> ComParams {

@@ -69,18 +69,18 @@ pub struct ResolvedService {
 }
 
 /// Resolves UDS DID values to MDD service names.
-pub struct DidResolver {
+pub(crate) struct DidResolver {
     manager: ManagerHandle,
 }
 
 impl DidResolver {
     /// Create a new resolver backed by the given manager handle.
-    pub fn new(manager: ManagerHandle) -> Self {
+    pub(crate) fn new(manager: ManagerHandle) -> Self {
         Self { manager }
     }
 
     /// Resolve the best-matching service for a UDS DID request.
-    pub async fn resolve(
+    pub(crate) async fn resolve(
         &self,
         service_type: ServiceType,
         did: u16,
@@ -94,7 +94,7 @@ impl DidResolver {
 
         // Attempt parse-validation to extract structured parameter data.
         let manager = self.manager.read().await;
-        let payload: cda_interfaces::ServicePayload = make_service_payload(uds_bytes);
+        let payload = make_service_payload(uds_bytes);
         let diag_comm = make_diag_comm(&service_name, sid);
 
         if let Ok(parsed) = manager

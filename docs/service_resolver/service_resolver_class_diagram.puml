@@ -19,8 +19,8 @@ skinparam classFontSize 12
 
 ' ─────────────────────────────────────────────────────────────────
 ' proxy-core::service_resolver
-' Facade (ServiceResolver) owns CdaEcuManager and ecu_name.
-' Sub-components are public fields (not accessors):
+' ServiceResolver owns CdaEcuManager.
+' Sub-components are private fields, exposed via delegating methods:
 '   resolver : DidResolver      (resolve.rs)   -- DID-to-service resolution
 '   encoder  : ResponseEncoder  (response.rs)  -- UDS response encoding
 '   metadata : MetadataProvider (metadata.rs)  -- MDD parameter queries
@@ -30,46 +30,48 @@ package "proxy-core::service_resolver" {
 
     class ServiceResolver <<facade>> {
         - manager : CdaEcuManager
-        - ecu_name : String
-        + resolver : DidResolver
-        + encoder : ResponseEncoder
-        + metadata : MetadataProvider
+        - resolver : DidResolver
+        - encoder : ResponseEncoder
+        - metadata : MetadataProvider
         == mod.rs -- construction ==
-        + {static} <<async>> new(ecu_name, db, logical, tester) : Result<Self>
+        + {static} <<async>> new(db, logical, tester) : Result<Self>
         - {static} <<async>> activate_base_variant(manager) : Result<()>
         - {static} default_com_params(logical, tester: u16) : ComParams
-        + ecu_name() : &str
+        == mod.rs -- public API ==
+        + <<async>> resolve(service_type, did, uds) : Option<ResolvedService>
+        + <<async>> build_response(name, sid, did, data) : Result<Vec<u8>>
+        + <<async>> get_response_metadata(name, did) : Result<Vec<RespParam>>
     }
 
     together {
-        class DidResolver {
+        class DidResolver <<crate-internal>> {
             - manager : CdaEcuManager
             == resolve.rs -- DID --> service name ==
-            + <<async>> resolve(service_type, did, uds) : Option<ResolvedService>
+            ~ <<async>> resolve(service_type, did, uds) : Option<ResolvedService>
             - <<async>> resolve_service_did(sid, did, label) : Option<String>
             - {static} build_did_candidates(manager, did_prefix, sid, did, label) : Option<Vec<String>>
             - {static} <<async>> match_candidate_did(manager, name, sid, did) : bool
             - {static} <<async>> probe_service_did(manager, name, sid, meta) : Option<u16>
         }
 
-        class ResponseEncoder {
+        class ResponseEncoder <<crate-internal>> {
             - manager : CdaEcuManager
             - metadata : MetadataProvider
             == response.rs -- encode UDS response ==
-            + <<async>> build_response(name, sid, did, data) : Result<Vec<u8>>
+            ~ <<async>> build_response(name, sid, did, data) : Result<Vec<u8>>
             - <<async>> encode_response_from_metadata(name, sid, did, data) : Option<(Vec<u8>, String)>
             - <<async>> validate_response(name, sid, bytes) : ()
         }
 
-        class MetadataProvider {
+        class MetadataProvider <<crate-internal>> {
             - manager : CdaEcuManager
             == metadata.rs -- MDD parameter queries ==
-            + <<async>> get_request_params(name) : Result<Vec<Param>>
-            + <<async>> get_response_params(name) : Result<Vec<RespParam>>
-            + <<async>> get_enriched_response_metadata(name, did) : Result<Vec<RespParam>>
-            + <<async>> get_enriched_response_metadata_with_source(name, did) : Result<(Vec<RespParam>, String)>
-            + <<async>> lookup_service_names_by_sid(sid) : Result<Vec<String>>
-            + <<async>> get_mux_cases_for_service(name) : Result<Vec<MuxCase>>
+            ~ <<async>> get_request_params(name) : Result<Vec<Param>>
+            ~ <<async>> get_response_params(name) : Result<Vec<RespParam>>
+            ~ <<async>> get_enriched_response_metadata(name, did) : Result<Vec<RespParam>>
+            ~ <<async>> get_enriched_response_metadata_with_source(name, did) : Result<(Vec<RespParam>, String)>
+            ~ <<async>> lookup_service_names_by_sid(sid) : Result<Vec<String>>
+            ~ <<async>> get_response_metadata(name, did) : Result<Vec<RespParam>>
         }
     }
 
@@ -122,9 +124,9 @@ package "proxy-core::service_resolver" {
         + params : Map
     }
 
-    ServiceResolver *--> DidResolver : resolver (pub field)
-    ServiceResolver *--> ResponseEncoder : encoder (pub field)
-    ServiceResolver *--> MetadataProvider : metadata (pub field)
+    ServiceResolver *--> DidResolver : resolver (private)
+    ServiceResolver *--> ResponseEncoder : encoder (private)
+    ServiceResolver *--> MetadataProvider : metadata (private)
     ResponseEncoder o--> MetadataProvider : holds (explicit dependency)
     DidResolver ..> uds_helpers : uses
     ResponseEncoder ..> uds_helpers : uses

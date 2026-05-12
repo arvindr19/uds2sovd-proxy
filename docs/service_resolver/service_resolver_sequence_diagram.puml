@@ -13,7 +13,7 @@
 title ServiceResolver: DID Resolution & Response Building\n<size:11><color:gray>Entry points: SovdDiagHandler.handle_read_did() / handle_write_did() (proxy-sovd)</color></size>
 
 actor "SovdDiagHandler\n(proxy-sovd)" as Client
-participant "ServiceResolver\n(mod.rs facade)" as Facade
+participant "ServiceResolver\n(mod.rs)" as Facade
 participant "DidResolver\n(resolve.rs)" as Resolver
 participant "MetadataProvider\n(metadata.rs)" as Meta
 participant "ResponseEncoder\n(response.rs)" as Resp
@@ -21,76 +21,83 @@ participant "CDA EcuManager" as CDA
 
 == READ Service Resolution ==
 
-Client -> Resolver: resolve(ServiceType::Read, did, uds_bytes)
-activate Resolver
+Client -> Facade: resolve(ServiceType::Read, did, uds_bytes)
+activate Facade
 
-  Resolver -> Resolver: resolve_service_did(sid=0x22, did, label="READ")
+  Facade -> Resolver: resolve(service_type, did, uds_bytes)
   activate Resolver
 
-    Resolver -> CDA: lookup_diagcomms_by_request_prefix([0x22, DID_HI, DID_LO])
-    activate CDA
-    CDA --> Resolver: matching_services
-    deactivate CDA
-
-    Resolver -> Resolver: build_did_candidates(manager, did_prefix, sid, did, label)
+    Resolver -> Resolver: resolve_service_did(sid=0x22, did, label="READ")
     activate Resolver
-    Resolver -> CDA: get_components_data_info() or\nget_components_configurations_info()
-    activate CDA
-    CDA --> Resolver: all SID-matching service names
-    deactivate CDA
-    deactivate Resolver
 
-    loop for each candidate service name
-      Resolver -> Resolver: match_candidate_did(manager, name, sid, did)
-      activate Resolver
-
-      Resolver -> CDA: get_request_parameter_metadata(candidate_name)
+      Resolver -> CDA: lookup_diagcomms_by_request_prefix([0x22, DID_HI, DID_LO])
       activate CDA
-      CDA --> Resolver: param metadata
+      CDA --> Resolver: matching_services
       deactivate CDA
 
-      alt CodedConst DID
-        Resolver -> Resolver: parse_u64_literal(coded_value)
-      else PhysConst DID (coded_value absent)
-        Resolver -> Resolver: probe_service_did(manager, name, sid, meta)
+      Resolver -> Resolver: build_did_candidates(manager, did_prefix, sid, did, label)
+      activate Resolver
+      Resolver -> CDA: get_components_data_info() or\nget_components_configurations_info()
+      activate CDA
+      CDA --> Resolver: all SID-matching service names
+      deactivate CDA
+      deactivate Resolver
+
+      loop for each candidate service name
+        Resolver -> Resolver: match_candidate_did(manager, name, sid, did)
         activate Resolver
-        Resolver -> CDA: create_uds_payload(diag_comm, plugin, params)
+
+        Resolver -> CDA: get_request_parameter_metadata(candidate_name)
         activate CDA
-        CDA --> Resolver: encoded payload
+        CDA --> Resolver: param metadata
         deactivate CDA
-        Resolver -> Resolver: extract_did_from_uds(payload.data)
+
+        alt CodedConst DID
+          Resolver -> Resolver: parse_u64_literal(coded_value)
+        else PhysConst DID (coded_value absent)
+          Resolver -> Resolver: probe_service_did(manager, name, sid, meta)
+          activate Resolver
+          Resolver -> CDA: create_uds_payload(diag_comm, plugin, params)
+          activate CDA
+          CDA --> Resolver: encoded payload
+          deactivate CDA
+          Resolver -> Resolver: extract_did_from_uds(payload.data)
+          deactivate Resolver
+        else Value DID
+          Resolver -> Resolver: did_matches_compu_scales(scales, did)
+        end
+
         deactivate Resolver
-      else Value DID
-        Resolver -> Resolver: did_matches_compu_scales(scales, did)
       end
 
-      deactivate Resolver
-    end
+    deactivate Resolver
 
+    Resolver -> CDA: convert_request_from_uds(diag_comm, payload, strict=true)
+    activate CDA
+    CDA --> Resolver: parsed JSON params
+    deactivate CDA
+
+  Resolver --> Facade: Option<ResolvedService { name, params }>
   deactivate Resolver
 
-  Resolver -> CDA: convert_request_from_uds(diag_comm, payload, strict=true)
-  activate CDA
-  CDA --> Resolver: parsed JSON params
-  deactivate CDA
-
-deactivate Resolver
-
-Resolver --> Client: Option<ResolvedService { name, params }>
-deactivate Resolver
+Facade --> Client: Option<ResolvedService { name, params }>
+deactivate Facade
 
 == WRITE Service Handling ==
 
 note right of Client
   Similar flow for WRITE services
-  client calls resolver.resolve(ServiceType::Write, did, uds_bytes)
+  client calls facade.resolve(ServiceType::Write, did, uds_bytes)
   which uses sid=0x2E and get_components_configurations_info()
 end note
 
 == Response Building ==
 
-Client -> Resp: build_response(service_name, sid, did, response_data)
-activate Resp
+Client -> Facade: build_response(service_name, sid, did, response_data)
+activate Facade
+
+  Facade -> Resp: build_response(service_name, sid, did, response_data)
+  activate Resp
 
   Resp -> Resp: encode_response_from_metadata(service_name, sid, did, data)
   activate Resp
@@ -146,14 +153,18 @@ alt DEBUG level enabled
   deactivate Resp
 end
 
-Resp --> Client: Result<Vec<u8>, DiagServiceError>
+Resp --> Facade: Result<Vec<u8>, DiagServiceError>
 deactivate Resp
+
+Facade --> Client: Result<Vec<u8>, DiagServiceError>
+deactivate Facade
 
 note right of Client
 
-  - **ServiceResolver (mod.rs)**: construction,
-    variant activation. Sub-components:
-    resolver, encoder, metadata
+  - **ServiceResolver (mod.rs)**: public entry point —
+    construction, variant activation, and delegating
+    resolve() / build_response() / get_response_metadata()
+    to internal sub-components.
   - **DidResolver (resolve.rs)**: DID -> service resolution,
     candidate building, metadata matching
   - **ResponseEncoder (response.rs)**: UDS response encoding,
@@ -164,9 +175,9 @@ note right of Client
     encoding, decoding, MUX matching
 
   **Data flow:**
-  Caller accesses resolver, encoder, metadata as
-  direct pub fields on ServiceResolver, then calls methods
-  on those sub-components directly.
+  Caller invokes facade methods on ServiceResolver.
+  ServiceResolver delegates internally to sub-components
+  (all private: resolver, encoder, metadata).
   ResponseEncoder holds MetadataProvider internally
   for the cross-module enrichment dependency.
 end note

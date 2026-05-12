@@ -16,29 +16,34 @@
 //! MDD, looks up services by SID, and retrieves MUX case information.
 
 use cda_interfaces::{
-    DiagServiceError, DynamicPlugin, EcuManager as EcuManagerTrait, MuxCaseInfo,
-    ServiceParameterMetadata,
+    DiagServiceError, DynamicPlugin, EcuManager as EcuManagerTrait, ServiceParameterMetadata,
 };
 
 use super::{ManagerHandle, uds_helpers::has_mux_case_for_did_exact, uds_service_ids};
 
 #[derive(Clone)]
-pub struct MetadataProvider {
+pub(crate) struct MetadataProvider {
     manager: ManagerHandle,
 }
 
 impl MetadataProvider {
-    pub fn new(manager: ManagerHandle) -> Self {
+    pub(crate) fn new(manager: ManagerHandle) -> Self {
         Self { manager }
     }
 
     /// Return the request parameter layout for `service_name`.
     ///
+    /// # Note
+    ///
+    /// This function is retained for debug/inspection purposes and is not
+    /// part of the main request processing flow.
+    ///
     /// # Errors
     ///
     /// Returns `DiagServiceError` when the service is unknown or the MDD
     /// does not contain request metadata.
-    pub async fn get_request_params(
+    #[allow(dead_code)]
+    pub(crate) async fn get_request_params(
         &self,
         service_name: &str,
     ) -> Result<Vec<ServiceParameterMetadata>, DiagServiceError> {
@@ -52,7 +57,7 @@ impl MetadataProvider {
     ///
     /// Returns `DiagServiceError` when the service is unknown or no response
     /// metadata exists.
-    pub async fn get_response_params(
+    pub(crate) async fn get_response_params(
         &self,
         service_name: &str,
     ) -> Result<Vec<cda_interfaces::ResponseParameterInfo>, DiagServiceError> {
@@ -75,7 +80,7 @@ impl MetadataProvider {
     /// # Errors
     ///
     /// Returns `DiagServiceError` when the base metadata lookup fails.
-    pub async fn get_enriched_response_metadata(
+    pub(crate) async fn get_enriched_response_metadata(
         &self,
         service_name: &str,
         did: u16,
@@ -90,10 +95,16 @@ impl MetadataProvider {
     /// Returns READ services for SID 0x22, WRITE services for SID 0x2E,
     /// or an empty vector for unrecognised SIDs.
     ///
+    /// # Note
+    ///
+    /// This function is retained for debug/inspection purposes and is not
+    /// part of the main request processing flow.
+    ///
     /// # Errors
     ///
     /// Returns `DiagServiceError` when the service name lookup fails.
-    pub async fn lookup_service_names_by_sid(
+    #[allow(dead_code)]
+    pub(crate) async fn lookup_service_names_by_sid(
         &self,
         sid: u8,
     ) -> Result<Vec<String>, DiagServiceError> {
@@ -116,21 +127,31 @@ impl MetadataProvider {
         Ok(names)
     }
 
-    /// Return MUX case definitions for `service_name`.
+    /// Return the best available POS-RESPONSE metadata for `service_name` + `did`.
     ///
-    /// Queries the MDD for all MUX cases associated with the service,
-    /// used to determine which parameters are active for each MUX value.
+    /// Tries the enriched (MUX-substituted) path first; falls back to the plain
+    /// POS-RESPONSE layout when the enriched path fails.
     ///
     /// # Errors
     ///
-    /// Returns `DiagServiceError` when the service is unknown or the MDD
-    /// query fails.
-    pub async fn get_mux_cases_for_service(
+    /// Returns `DiagServiceError` when both the enriched and plain paths fail.
+    pub(crate) async fn get_response_metadata(
         &self,
         service_name: &str,
-    ) -> Result<Vec<MuxCaseInfo>, DiagServiceError> {
-        let manager = self.manager.read().await;
-        manager.get_mux_cases_for_service(service_name)
+        did: u16,
+    ) -> Result<Vec<cda_interfaces::ResponseParameterInfo>, DiagServiceError> {
+        match self.get_enriched_response_metadata(service_name, did).await {
+            Ok(meta) => Ok(meta),
+            Err(enriched_err) => {
+                tracing::debug!(
+                    "[MDD] Enriched metadata unavailable for '{}': {}. Falling back to basic \
+                     POS-RESPONSE metadata",
+                    service_name,
+                    enriched_err
+                );
+                self.get_response_params(service_name).await
+            }
+        }
     }
 
     /// Retrieve enriched POS-RESPONSE metadata with the source service name.
@@ -145,7 +166,7 @@ impl MetadataProvider {
     /// # Errors
     ///
     /// Returns `DiagServiceError` when the base metadata lookup fails.
-    pub async fn get_enriched_response_metadata_with_source(
+    pub(crate) async fn get_enriched_response_metadata_with_source(
         &self,
         service_name: &str,
         did: u16,

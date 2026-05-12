@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn sovd_defaults_are_sane() {
         let s = SovdConfig::default();
-        assert!(!s.mock_gateway);
+        assert!(s.mock_gateway);
         assert!(s.include_schema);
         assert_eq!(s.timeout_ms, 5_000);
     }

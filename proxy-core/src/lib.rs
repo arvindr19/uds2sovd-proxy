@@ -10,21 +10,10 @@
  * https://www.apache.org/licenses/LICENSE-2.0
  */
 
-//! Core types and traits shared across all proxy crates.
-//!
-//! Defines configuration, error types, and the MDD-driven [`ServiceResolver`] facade
-//! with three composable sub-components:
-//!
-//! - [`DidResolver`] — DID-to-service resolution
-//! - [`ResponseEncoder`] — UDS response encoding
-//! - [`MetadataProvider`] — MDD parameter metadata queries
-
 pub mod config;
 pub mod error;
-pub mod service_resolver;
+pub(crate) mod service_resolver;
 
 pub use config::{Cli, Config, EidGid, LogFormat, LogLevel};
 pub use error::{ProxyError, Result};
-pub use service_resolver::{
-    DidResolver, MetadataProvider, ResolvedService, ResponseEncoder, ServiceResolver, ServiceType,
-};
+pub use service_resolver::{ResolvedService, ServiceResolver, ServiceType, uds_service_ids};

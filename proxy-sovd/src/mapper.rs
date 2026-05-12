@@ -188,31 +188,14 @@ impl SovdMapper {
             would_be_url
         );
 
-        let meta = match resolver
-            .metadata
-            .get_enriched_response_metadata(service_name, did)
+        let meta = resolver
+            .get_response_metadata(service_name, did)
             .await
-        {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::debug!(
-                    "[SOVD MOCK] Enriched metadata unavailable for '{}': {}. Falling back to \
-                     basic POS-RESPONSE metadata",
-                    service_name,
-                    e
-                );
-                resolver
-                    .metadata
-                    .get_response_params(service_name)
-                    .await
-                    .map_err(|inner| {
-                        SovdError::SchemaMismatch(format!(
-                            "Failed to load POS-RESPONSE metadata for '{service_name}': {e} \
-                             (fallback: {inner})"
-                        ))
-                    })?
-            }
-        };
+            .map_err(|e| {
+                SovdError::SchemaMismatch(format!(
+                    "Failed to load POS-RESPONSE metadata for '{service_name}': {e}"
+                ))
+            })?;
 
         if meta.is_empty() {
             return Err(SovdError::SchemaMismatch(format!(
@@ -257,7 +240,6 @@ impl SovdMapper {
         }
 
         let uds_bytes = resolver
-            .encoder
             .build_response(
                 service_name,
                 service_ids::READ_DATA_BY_IDENTIFIER,

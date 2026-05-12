@@ -79,7 +79,6 @@ impl SovdDiagHandler {
             name: service_name,
             params: parsed_data,
         } = mgr
-            .resolver
             .resolve(ServiceType::Read, did, uds_request)
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;
@@ -110,7 +109,6 @@ impl SovdDiagHandler {
             name: service_name,
             params: parsed_data,
         } = mgr
-            .resolver
             .resolve(ServiceType::Write, did, uds_request)
             .await
             .ok_or(ProxyError::Uds(UdsError::InvalidDid(did)))?;

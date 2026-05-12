@@ -226,7 +226,6 @@ impl ConnectionHandler {
 
     /// Dispatch an incoming `DoIP` frame to the correct handler based on
     /// its payload type.
-
     async fn process_message(&mut self, msg: &DoIpMessage) -> Result<()> {
         let payload_type = msg.payload_type_enum();
         debug!(

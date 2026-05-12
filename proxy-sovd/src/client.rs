@@ -16,7 +16,6 @@ use cda_interfaces::{ParameterTypeMetadata, ResponseParameterInfo};
 use proxy_core::{
     config::SovdConfig,
     error::{Result, SovdError},
-    service_resolver::find_mux_case_prefix,
 };
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -375,6 +374,42 @@ impl SovdClient {
         const DEFAULT_OPAQUE_SIZE: usize = 4;
         Value::Array(vec![Value::Number(0.into()); DEFAULT_OPAQUE_SIZE])
     }
+}
+
+fn parse_mux_coded_value(coded_value: &str) -> Option<u64> {
+    let trimmed = coded_value.trim();
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    trimmed.parse::<u64>().ok().or_else(|| {
+        let v = trimmed.parse::<f64>().ok()?;
+        (v >= 0.0 && v <= u64::MAX as f64).then_some(v as u64)
+    })
+}
+
+fn find_mux_case_prefix(meta: &[ResponseParameterInfo], did: u16) -> Option<String> {
+    let did_val = u64::from(did);
+    let mut mux_entries: Vec<(u64, &str)> = meta
+        .iter()
+        .filter_map(|p| {
+            let case_name = p.name.strip_prefix("__mux_case__/")?;
+            if let cda_interfaces::ParameterTypeMetadata::CodedConst { coded_value } = &p.param_type
+            {
+                let lower = parse_mux_coded_value(coded_value)?;
+                Some((lower, case_name))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if mux_entries.is_empty() {
+        return None;
+    }
+    mux_entries.sort_by_key(|&(lb, _)| lb);
+    let matched = mux_entries.iter().rev().find(|&&(lb, _)| lb <= did_val)?;
+    Some(format!("{}/", matched.1))
 }
 
 #[cfg(test)]
